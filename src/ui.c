@@ -1663,7 +1663,9 @@ static LRESULT CALLBACK stars_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 
 /* ---- common type fusions ------------------------------------------------------------------ */
 typedef struct { const char *recipe; int result; int need; } Fuse;   /* need: ATK a material must reach, 0 = any */
-#define N_FUSES 8
+#define N_FUSES 11
+#define FUSES_VISIBLE 8   /* rows shown at once; the rest scroll */
+static int g_fuse_scroll;   /* first row shown */
 static const Fuse FUSES[N_FUSES] = {
     /* Below `need` the same pair makes that rule's weaker first-tier result instead
      * (cards 425 Thunder Dragon, 272 and 462). */
@@ -1672,10 +1674,13 @@ static const Fuse FUSES[N_FUSES] = {
     { "Pyro + Winged Beast", 467, 1300 },        /* Crimson Sunbird 2300 */
     { "Spellcaster + Jar", 401, 0 },             /* Ushi Oni 2150 */
     { "Beast + Pyro", 529, 0 },                  /* Flame Cerebrus 2100 */
+    { "Rock + Female", 531, 0 },                 /* Mystical Sand 2100 */
     { "Beast + Fairy", 483, 0 },                 /* Garvas 2000 */
     { "Spellcaster + Elf", 551, 0 },             /* Dark Elf 2000 */
     { "Spellcaster + Thunder", 458, 1500 },      /* Kaminari Attack 1900 */
     { "Beast + Female", 627, 0 },                /* Nekogal #2 1900 */
+    { "Plant + Female", 638, 0 },                /* Queen of Autumn Leaves 1800 */
+    { "Beast + Plant", 487, 0 },                 /* Flower Wolf 1800 */
 };
 
 static void paint_fuses(HWND h)
@@ -1690,10 +1695,11 @@ static void paint_fuses(HWND h)
     HGDIOBJ ob = SelectObject(dc, bm);
     fill(dc, 0, 0, W, H, C_PANEL2);
     frame(dc, rc, C_LINE);
-    int pad = S(10), rh = (H - S(12)) / N_FUSES;
+    int pad = S(10), rh = S(24);
     int col = (W - 2 * pad) * 40 / 100;
-    for (int i = 0; i < N_FUSES; i++) {
-        int y = S(6) + i * rh;
+    for (int i = g_fuse_scroll; i < N_FUSES; i++) {
+        int y = S(6) + (i - g_fuse_scroll) * rh;
+        if (y > H) break;
         RECT a = { pad, y, pad + col, y + rh };
         text_rect(dc, a, FUSES[i].recipe, f_ui, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         /* middle: the ATK one material needs for this outcome */
@@ -1719,10 +1725,47 @@ static void paint_fuses(HWND h)
     EndPaint(h, &ps);
 }
 
+static void fuses_set_scroll(HWND h, int pos)
+{
+    RECT rc;
+    GetClientRect(h, &rc);
+    int visible = (rc.bottom - S(12)) / S(24);
+    if (visible < 1) visible = 1;
+    int maxpos = N_FUSES - visible;
+    if (maxpos < 0) maxpos = 0;
+    if (pos > maxpos) pos = maxpos;
+    if (pos < 0) pos = 0;
+    g_fuse_scroll = pos;
+    SCROLLINFO si = { sizeof si, SIF_RANGE | SIF_PAGE | SIF_POS, 0, N_FUSES - 1, (UINT)visible, pos, 0 };
+    SetScrollInfo(h, SB_VERT, &si, TRUE);
+    InvalidateRect(h, NULL, FALSE);
+}
+
 static LRESULT CALLBACK fuses_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
-    if (m == WM_PAINT) { paint_fuses(h); return 0; }
-    if (m == WM_ERASEBKGND) return 1;
+    switch (m) {
+    case WM_PAINT: paint_fuses(h); return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_SIZE: fuses_set_scroll(h, g_fuse_scroll); return 0;
+    case WM_MOUSEWHEEL: fuses_set_scroll(h, g_fuse_scroll - GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA); return 0;
+    case WM_VSCROLL: {
+        SCROLLINFO si = { sizeof si, SIF_ALL };
+        GetScrollInfo(h, SB_VERT, &si);
+        int pos = si.nPos;
+        switch (LOWORD(w)) {
+        case SB_LINEUP: pos--; break;
+        case SB_LINEDOWN: pos++; break;
+        case SB_PAGEUP: pos -= (int)si.nPage; break;
+        case SB_PAGEDOWN: pos += (int)si.nPage; break;
+        case SB_THUMBTRACK: case SB_THUMBPOSITION: pos = si.nTrackPos; break;
+        case SB_TOP: pos = 0; break;
+        case SB_BOTTOM: pos = N_FUSES; break;
+        }
+        fuses_set_scroll(h, pos);
+        return 0;
+    }
+    case WM_MOUSEACTIVATE: SetFocus(h); return MA_ACTIVATE;
+    }
     return DefWindowProc(h, m, w, l);
 }
 
@@ -1840,7 +1883,7 @@ static void layout(void)
         ptext(PG_SUMMARY, fx + fw / 2, fy + S(2), fw - fw / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26));
         /* common type fusions: between the stars and the passwords */
-        int uh = S(N_FUSES * 24 + 12), uy = fy - S(14) - uh;
+        int uh = S(FUSES_VISIBLE * 24 + 12), uy = fy - S(14) - uh;
         ptext(PG_SUMMARY, fx, uy - S(26), fw, S(22), "Common fusions", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_fuses, fx, uy, fw, uh);
         ptext(PG_SUMMARY, fx, S(10), fw, S(22), "Guardian stars", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
@@ -2193,7 +2236,8 @@ static void create_children(void)
     vlist_set_rows(&g_lists[L_RANK], ten, N_RULES);
     g_strip = CreateWindow("FMStrip", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     g_stars = CreateWindow("FMStars", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
-    g_fuses = CreateWindow("FMFuses", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
+    g_fuses = CreateWindow("FMFuses", "", WS_CHILD | WS_VISIBLE | WS_VSCROLL, 0, 0, 10, 10, p, NULL, g_inst, NULL);
+    SetWindowTheme(g_fuses, L"DarkMode_Explorer", NULL);
     static const char *const sf_cols[] = { "Card", "Password", "Cost", "Owned" };
     static const int sf_w[] = { 200, 100, 70, 64 };
     vlist_create(&g_lists[L_SUM_FAV], L_SUM_FAV, p, 4, sf_cols, sf_w, "lccc", t_sumfav, c_sumfav);
