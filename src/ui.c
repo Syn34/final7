@@ -1553,10 +1553,9 @@ static void paint_sumcard(HWND h)
         if (p >= 0) {
             snprintf(pct, sizeof pct, "%.2f%%", p * 100);
             pc = p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED);
-            if (g_sim_running) f7label = "Beat Final 7 (updating...)";
         } else {
             snprintf(pct, sizeof pct, "?");
-            f7label = g_sim_running ? "Beat Final 7 (working...)" : "Beat Final 7 (needs disc)";
+            if (!g_sim_running) f7label = "Beat Final 7 (needs disc)";
         }
     }
     RECT pr = { W / 2, y, W - x, y + S(60) };
