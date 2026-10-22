@@ -58,10 +58,9 @@ enum {
     ID_LOG = 160,
     ID_LIST = 200,
 };
-enum { L_RANK, L_DROPS, L_ALL, L_TRACK, L_DUELISTS, L_DETAIL, L_PW, L_SUM_FAV, L_DROPDUEL, N_LISTS };
-enum { PG_SUMMARY, PG_DUEL, PG_CARDS, PG_DROPS, PG_DUELISTS, PG_PW, PG_LOG, N_PAGES };
-static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Duel & Rank", "Card Overview", "Drops", "Duelists",
-                                                 "Passwords", "Log" };
+enum { L_RANK, L_DROPS, L_ALL, L_TRACK, L_DETAIL, L_PW, L_SUM_FAV, L_DROPDUEL, N_LISTS };
+enum { PG_SUMMARY, PG_DUEL, PG_CARDS, PG_DROPS, PG_PW, N_PAGES };
+static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Duel & Rank", "Card Overview", "Drops", "Passwords" };
 #define APP_NAME "final7"
 
 #define WM_APP_ATTACHED (WM_APP + 1)
@@ -533,15 +532,18 @@ static const char *item_name(int i)
 
 static const char *item_kind(int i)
 {
-    if (i > N_CARDS) return "All cards of this type";
+    if (i == ITEM_EQUIP) return "Every Equip card";
+    if (i > N_CARDS) return "Type, incl. subtypes";
     return CARDS[i - 1].type;
 }
 
 static int item_matches(int item, int id)
 {
     if (item <= N_CARDS) return item == id;
-    const char *t = item == ITEM_DRAGON ? "Dragon" : (item == ITEM_EQUIP ? "Equip" : "Thunder");
-    return !strcmp(CARDS[id - 1].type, t);
+    const Card *c = &CARDS[id - 1];
+    if (item == ITEM_DRAGON) return !strcmp(c->type, "Dragon") || (c->sub & 1);   /* e.g. Dragon Zombie */
+    if (item == ITEM_THUNDER) return !strcmp(c->type, "Thunder") || (c->sub & 2);
+    return !strcmp(c->type, "Equip");
 }
 
 /* copies in the deck (where 0) or chest (where 1) */
@@ -563,8 +565,6 @@ static int is_tracked(int item)
     for (int i = 0; i < g_ntracked; i++) if (g_tracked[i] == item) return 1;
     return 0;
 }
-
-static int recent_change(int item) { return g_ichg_time[item] && now_ms() - g_ichg_time[item] < 15000; }
 
 static void t_all(int item, int col, char *b, int n)
 {
@@ -592,43 +592,12 @@ static void t_track(int item, int col, char *b, int n)
     case 0: snprintf(b, n, "%s", item_name(item)); break;
     case 1: ok ? snprintf(b, n, "%d", item_count(item, 0)) : (b[0] = 0); break;
     case 2: ok ? snprintf(b, n, "%d", item_count(item, 1)) : (b[0] = 0); break;
-    case 3: ok ? snprintf(b, n, "%d", item_count(item, 0) + item_count(item, 1)) : (b[0] = 0); break;
-    default: recent_change(item) ? snprintf(b, n, "%+d", g_ichg_delta[item]) : (b[0] = 0); break;
+    default: ok ? snprintf(b, n, "%d", item_count(item, 0) + item_count(item, 1)) : (b[0] = 0); break;
     }
 }
 static COLORREF c_track(int item, COLORREF *bg)
 {
-    if (recent_change(item)) {
-        *bg = g_ichg_delta[item] > 0 ? C_UPBG : C_DOWNBG;
-        return RGB(255, 255, 255);
-    }
-    return C_TEXT;
-}
-
-static void t_duelist(int d, int col, char *b, int n)
-{
-    DStat *s = &g_dstat[d];
-    char lab[8];
-    switch (col) {
-    case 0: snprintf(b, n, "%d", d); break;
-    case 1: snprintf(b, n, "%s", DUELISTS[d - 1]); break;
-    case 2: snprintf(b, n, "%d", s->fw); break;
-    case 3: snprintf(b, n, "%d", s->fl); break;
-    case 4: snprintf(b, n, "%d", s->sw); break;
-    case 5: snprintf(b, n, "%d", s->sl); break;
-    case 6: if (s->w + s->l) snprintf(b, n, "%.0f%%", 100.0 * s->w / (s->w + s->l)); else snprintf(b, n, "-"); break;
-    case 7: snprintf(b, n, "%.0f%%", s->chance * 100); break;
-    default: if (s->best >= 0) { rank_label(s->best, NULL, NULL, lab); snprintf(b, n, "%s", lab); } else b[0] = 0; break;
-    }
-}
-static COLORREF c_duelist(int d, COLORREF *bg)
-{
-    if (duel_active() && g_tr.opponent == d) {
-        *bg = C_CURBG;
-        return RGB(0xff, 0xe6, 0xa8);
-    }
-    double p = g_dstat[d].chance;
-    (void)p;
+    (void)item; (void)bg;
     return C_TEXT;
 }
 
@@ -874,7 +843,6 @@ static void update_dstats(int force)
         record_for(d, &g_dstat[d]);
         g_dstat[d].chance = chance_for(d, duel_active() && g_tr.opponent == d, NULL, 0);
     }
-    InvalidateRect(g_lists[L_DUELISTS].hwnd, NULL, FALSE);
 }
 
 /* ---- duel events ---------------------------------------------------------------- */
@@ -1508,8 +1476,6 @@ static void paint_sumcard(HWND h)
     rows[nr++].k = "Toughest duelist";
     snprintf(rows[nr].val, 96, "%s (%.0f%%)", duelist_name(easy), g_dstat[easy].chance * 100);
     rows[nr++].k = "Easiest duelist";
-    snprintf(rows[nr].val, 96, "%d tracked  |  %d favorites", g_ntracked, g_nfavs);
-    rows[nr++].k = "Watching";
     for (int i = 0; i < nr && y + S(20) < H; i++) {
         text_at(dc, x, y, rows[i].k, f_small, C_MUTED);
         RECT r = { x + S(110), y, W - x, y + S(20) };
@@ -1556,9 +1522,7 @@ static void paint_strip(HWND h)
         if (snap_ok()) snprintf(num, sizeof num, "%d", item_count(item, 0));
         int bw = S(30), bh = S(30);
         RECT box = { x + tw - bw - S(2), th - bh - S(2), x + tw - S(2), th - S(2) };
-        COLORREF bg = RGB(0, 0, 0);
-        if (recent_change(item)) bg = g_ichg_delta[item] > 0 ? RGB(0x1e, 0x7a, 0x40) : RGB(0x8a, 0x22, 0x2c);
-        fill(dc, box.left, box.top, bw, bh, bg);
+        fill(dc, box.left, box.top, bw, bh, RGB(0, 0, 0));
         frame(dc, box, RGB(0xc8, 0xc8, 0xc8));
         text_rect(dc, box, num, f_count, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         RECT nr = { x, th + S(4), x + tw, H };
@@ -1715,11 +1679,10 @@ static void layout(void)
     {
         int mid = S(150);
         int w1 = (W - S(48) - mid) * 52 / 100, mx = S(12) + w1 + S(12), x3 = mx + mid + S(12), w3 = W - x3 - S(12);
-        ptext(PG_CARDS, S(12), S(10), w1, S(22), "Available (same list as Card Overview v2.1)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_card_search, S(16), S(40), w1 - S(8), S(22));
-        SetRect(&g_edit_frames[0], S(12), S(36), S(12) + w1, S(66));
-        place(g_lists[L_ALL].hwnd, S(12), S(74), w1, H - S(74) - S(30));
-        ptext(PG_CARDS, S(12), H - S(24), w1, S(18), "Dragon, Equip and Thunder count every card of that type. "
+        place(g_card_search, S(16), S(14), w1 - S(8), S(22));
+        SetRect(&g_edit_frames[0], S(12), S(10), S(12) + w1, S(40));
+        place(g_lists[L_ALL].hwnd, S(12), S(48), w1, H - S(48) - S(30));
+        ptext(PG_CARDS, S(12), H - S(24), w1, S(18), "Dragon and Thunder include subtypes (Dragon Zombie counts as a Dragon). "
               "Double-click to track.", NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
         int by = H / 2 - S(150);
         int ids[] = { ID_TRACK, ID_UNTRACK, ID_MOVEUP, ID_MOVEDN, ID_RESETDEF, ID_CLEAR };
@@ -1730,7 +1693,7 @@ static void layout(void)
         }
         ptext(PG_CARDS, x3, S(10), w3, S(22), "Tracked on Summary", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_CARDS, x3 + w3 / 2, S(12), w3 - w3 / 2, S(22), NULL, t_tracked_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
-        ptext(PG_CARDS, x3, S(42), w3, S(20), "Counts update live from your deck and trunk. Changes flash for 15 s.",
+        ptext(PG_CARDS, x3, S(42), w3, S(20), "Counts update live from your deck and trunk.",
               NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
         place(g_lists[L_TRACK].hwnd, x3, S(74), w3, H - S(74) - S(84));
         ptext(PG_CARDS, x3, H - S(76), w3, S(22), "Last cards dropped", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
@@ -1746,15 +1709,6 @@ static void layout(void)
         place(g_lists[L_DETAIL].hwnd, x2, S(74), w2, H - S(74) - S(52));
         ptext(PG_DROPS, x2, H - S(46), w2, S(42), NULL, t_detail_note, &f_small, C_MUTED, DT_WORDBREAK);
     }
-    /* duelists page */
-    {
-        ptext(PG_DUELISTS, S(12), S(10), W - S(24), S(22), "Chance to beat each duelist", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_lists[L_DUELISTS].hwnd, S(12), S(38), W - S(24), H - S(38) - S(52));
-        ptext(PG_DUELISTS, S(12), H - S(46), W - S(24), S(42),
-              "Free W/L = the game's own Free Duel record. Seen = duels this tracker watched (story included). "
-              "Chance to beat blends your record, a difficulty guess and your deck's strength vs. the CPU's deck; "
-              "during a duel it also follows life points.", NULL, &f_small, C_MUTED, DT_WORDBREAK);
-    }
     /* passwords page */
     {
         ptext(PG_PW, S(12), S(14), S(170), S(22), "All card passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
@@ -1769,7 +1723,6 @@ static void layout(void)
         ptext(PG_PW, W / 2, S(46), W / 2 - S(12), S(18), NULL, t_pw_count, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_PW].hwnd, S(12), S(70), W - S(24), H - S(82));
     }
-    place(g_log, S(12), S(12), W - S(24), H - S(24));
     for (int i = 0; i < N_LISTS; i++) vlist_fit(&g_lists[i]);
     for (int i = 0; i < N_PAGES; i++) InvalidateRect(g_pages[i], NULL, TRUE);
     InvalidateRect(g_main, NULL, FALSE);
@@ -1795,7 +1748,6 @@ static void show_page(int p)
     g_page = p;
     for (int i = 0; i < N_PAGES; i++) ShowWindow(g_pages[i], i == p ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < N_PAGES; i++) InvalidateRect(g_btn[ID_TAB0 - 100 + i], NULL, FALSE);
-    if (p == PG_DUELISTS) update_dstats(1);
     if (p == PG_DROPS && vlist_selected(&g_lists[L_DROPDUEL]) < 1)
         select_drop_duelist(duel_active() ? g_tr.opponent : 1, duel_active() ? drop_tier(g_rank_score) : -1);
 }
@@ -2069,23 +2021,16 @@ static void create_children(void)
     mkbutton(p, ID_MOVEDN, "Move down");
     mkbutton(p, ID_RESETDEF, "Reset to default");
     mkbutton(p, ID_CLEAR, "Clear all");
-    static const char *const tr_cols[] = { "Card / type", "In deck", "In trunk", "Total", "Change" };
-    static const int tr_w[] = { 200, 66, 70, 56, 66 };
-    vlist_create(&g_lists[L_TRACK], L_TRACK, p, 5, tr_cols, tr_w, "lcccc", t_track, c_track);
+    static const char *const tr_cols[] = { "Card / type", "In deck", "In trunk", "Total" };
+    static const int tr_w[] = { 200, 66, 70, 56 };
+    vlist_create(&g_lists[L_TRACK], L_TRACK, p, 4, tr_cols, tr_w, "lccc", t_track, c_track);
     if (g_il) {
         ListView_SetImageList(g_lists[L_ALL].hwnd, g_il, LVSIL_SMALL);
         ListView_SetImageList(g_lists[L_TRACK].hwnd, g_il, LVSIL_SMALL);
     }
 
-    /* duelists page */
-    p = g_pages[PG_DUELISTS];
-    static const char *const du_cols[] = { "#", "Duelist", "Free W", "Free L", "Seen W", "Seen L", "Win rate",
-                                           "Chance to beat", "Best rank" };
-    static const int du_w[] = { 36, 170, 64, 64, 66, 66, 76, 116, 84 };
-    vlist_create(&g_lists[L_DUELISTS], L_DUELISTS, p, 9, du_cols, du_w, "clccccccc", t_duelist, c_duelist);
     int dl[N_DUELISTS];
     for (int i = 0; i < N_DUELISTS; i++) dl[i] = i + 1;
-    vlist_set_rows(&g_lists[L_DUELISTS], dl, N_DUELISTS);
 
     /* drops page */
     p = g_pages[PG_DROPS];
@@ -2118,13 +2063,6 @@ static void create_children(void)
                                            "Owned" };
     static const int pw_w[] = { 40, 44, 240, 100, 70, 116, 70, 40, 60, 60, 66 };
     vlist_create(&g_lists[L_PW], L_PW, p, 11, pw_cols, pw_w, "cllcclccccc", t_pw, c_pw);
-
-    /* log page */
-    p = g_pages[PG_LOG];
-    g_log = CreateWindow("EDIT", "", WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-                         0, 0, 10, 10, p, (HMENU)(INT_PTR)ID_LOG, g_inst, NULL);
-    SendMessage(g_log, WM_SETFONT, (WPARAM)f_mono, TRUE);
-    SetWindowTheme(g_log, L"DarkMode_Explorer", NULL);
 
     rebuild_all_cards();
     rebuild_tracked();

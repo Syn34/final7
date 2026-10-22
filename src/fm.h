@@ -33,6 +33,7 @@ typedef struct {
     int level, atk, def;
     const char *password;   /* "" when the card has none */
     int cost;               /* starchips, -1 = cannot be bought */
+    int sub;                /* fusion subtypes: 1 = also a Dragon, 2 = also a Thunder (e.g. Dragon Zombie) */
 } Card;
 
 extern const Card CARDS[N_CARDS];          /* CARDS[id-1] */
