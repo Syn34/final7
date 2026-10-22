@@ -1577,20 +1577,6 @@ static void paint_sumcard(HWND h)
     frame(dc, box, C_MUTED);
     if (g_assume_win) fill(dc, box.left + S(3), box.top + S(3), S(8), S(8), C_GOLD);
     text_at(dc, x + S(22), y + S(2), "Include +2 win bonus", f_small, C_TEXT);
-    y += S(32);
-    fill(dc, x, y, W - 2 * x, 1, C_LINE);
-    y += S(12);
-    char v[96];
-    struct { const char *k; char val[96]; } rows[1];
-    int nr = 0;
-    snprintf(rows[nr].val, 96, "%s", snap_ok() ? (snprintf(v, sizeof v, "%u", g_snap.starchips), v) : "-");
-    rows[nr++].k = "Starchips";
-    for (int i = 0; i < nr && y + S(20) < H; i++) {
-        text_at(dc, x, y, rows[i].k, f_small, C_MUTED);
-        RECT r = { x + S(110), y, W - x, y + S(20) };
-        text_rect(dc, r, rows[i].val, f_ui, C_TEXT, DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
-        y += S(22);
-    }
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
@@ -1951,7 +1937,7 @@ static void layout(void)
     /* summary page */
     {
         int lw = S(380), x2 = S(12) + lw + S(14);
-        int ch = S(268);
+        int ch = S(232);
         place(g_sumcard, S(12), S(12), lw, ch);
         ptext(PG_SUMMARY, S(12), ch + S(22), lw, S(22), "Rank breakdown", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_lists[L_RANK].hwnd, S(12), ch + S(48), lw, H - ch - S(48) - S(12));
@@ -2506,6 +2492,22 @@ static HFONT mkfont(const char *face, int pt, int weight)
                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
 }
 
+/* Mouse wheel scrolls whatever list or panel is under the pointer, no click needed. */
+static HWND wheel_target(HWND focus, POINT pt)
+{
+    HWND h = WindowFromPoint(pt);
+    DWORD pid = 0;
+    if (!h || (GetWindowThreadProcessId(h, &pid), pid != GetCurrentProcessId())) return focus;
+    char cls[32];
+    if (GetClassNameA(h, cls, sizeof cls) && !_stricmp(cls, "SysHeader32")) h = GetParent(h);   /* list header */
+    for (HWND w = h; w; w = GetParent(w)) {   /* nearest window that can scroll */
+        if (GetClassNameA(w, cls, sizeof cls) && (!_stricmp(cls, "SysListView32") || !strcmp(cls, "FMFuses")))
+            return w;
+        if (!(GetWindowLong(w, GWL_STYLE) & WS_CHILD)) break;
+    }
+    return focus;
+}
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
     (void)prev;
@@ -2632,6 +2634,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0) > 0) {
+        if (msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL) msg.hwnd = wheel_target(msg.hwnd, msg.pt);
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
