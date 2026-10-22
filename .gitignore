@@ -1,6 +1,3 @@
-__pycache__/
-*.pyc
-tracker_data/
 build/
-dist/
-*.spec
+tracker_data/
+*.o

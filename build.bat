@@ -1,0 +1,11 @@
+@echo off
+rem Builds FMTracker.exe with MinGW-w64 (e.g. from https://winlibs.com) on Windows.
+cd /d "%~dp0"
+if not exist build mkdir build
+windres src\app.rc -O coff -o build\app.res || goto :err
+gcc -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -s -static -mwindows src\ui.c src\game.c src\emu.c src\demo.c src\cards_data.c build\app.res -o FMTracker.exe -lcomctl32 -luxtheme -lgdi32 -luser32 -lm || goto :err
+echo Built FMTracker.exe
+exit /b 0
+:err
+echo Build failed.
+exit /b 1
