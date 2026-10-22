@@ -69,7 +69,7 @@ static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Card Overview", "Dr
 
 /* ---- globals ---------------------------------------------------------------- */
 static HINSTANCE g_inst;
-static HWND g_main, g_pages[N_PAGES], g_sumcard, g_strip, g_stars, g_overlay;
+static HWND g_main, g_pages[N_PAGES], g_sumcard, g_strip, g_stars, g_fuses, g_overlay;
 static HIMAGELIST g_il;
 static HWND g_emu_combo, g_tier_combo, g_card_search, g_pw_search, g_log;
 static HWND g_btn[64];
@@ -1554,6 +1554,67 @@ static LRESULT CALLBACK stars_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     return DefWindowProc(h, m, w, l);
 }
 
+/* ---- common type fusions ------------------------------------------------------------------ */
+typedef struct { const char *recipe; int result; } Fuse;
+#define N_FUSES 8
+static const Fuse FUSES[N_FUSES] = {
+    { "Dragon + Plant + Thunder", 613 },   /* Dragon + Plant = B. Dragon Jungle King, + Thunder */
+    { "Beast + Fairy", 483 },              /* Garvas */
+    { "Pyro + Winged Beast", 467 },        /* Crimson Sunbird */
+    { "Spellcaster + Elf", 551 },          /* Dark Elf */
+    { "Spellcaster + Thunder", 458 },      /* Kaminari Attack */
+    { "Beast + Female", 627 },             /* Nekogal #2 */
+    { "Beast + Pyro", 529 },               /* Flame Cerebrus */
+    { "Spellcaster + Jar", 401 },          /* Ushi Oni */
+};
+
+static void paint_fuses(HWND h)
+{
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    int W = rc.right, H = rc.bottom;
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
+    HGDIOBJ ob = SelectObject(dc, bm);
+    fill(dc, 0, 0, W, H, C_PANEL2);
+    frame(dc, rc, C_LINE);
+    int pad = S(10), rh = (H - S(12)) / N_FUSES;
+    int col = (W - 2 * pad) * 46 / 100;
+    for (int i = 0; i < N_FUSES; i++) {
+        int y = S(6) + i * rh;
+        RECT a = { pad, y, pad + col, y + rh };
+        text_rect(dc, a, FUSES[i].recipe, f_ui, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        RECT eq = { pad + col, y, pad + col + S(18), y + rh };
+        text_rect(dc, eq, "=", f_bold, C_MUTED, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        int ix = pad + col + S(22), isz = rh - S(4);
+        art_draw(dc, FUSES[i].result, ix, y + S(2), isz * 102 / 96, isz);
+        const Card *c = &CARDS[FUSES[i].result - 1];
+        char res[96];
+        snprintf(res, sizeof res, "%s", c->name);
+        int tx = ix + isz * 102 / 96 + S(8);
+        RECT r = { tx, y, W - pad - S(60), y + rh };
+        text_rect(dc, r, res, f_bold, C_GOLD, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        char atk[24];
+        snprintf(atk, sizeof atk, "%d/%d", c->atk, c->def);
+        RECT ar = { W - pad - S(70), y, W - pad, y + rh };
+        text_rect(dc, ar, atk, f_small, C_MUTED, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    }
+    BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, ob);
+    DeleteObject(bm);
+    DeleteDC(dc);
+    EndPaint(h, &ps);
+}
+
+static LRESULT CALLBACK fuses_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_PAINT) { paint_fuses(h); return 0; }
+    if (m == WM_ERASEBKGND) return 1;
+    return DefWindowProc(h, m, w, l);
+}
+
 /* ---- overlay ------------------------------------------------------------------------ */
 static void paint_overlay(HWND h)
 {
@@ -1662,13 +1723,17 @@ static void layout(void)
         ptext(PG_SUMMARY, x2, S(10), sw + S(14), S(22), "Tracked cards", NULL, &f_bold, C_GOLD, DT_SINGLELINE | DT_END_ELLIPSIS);
         place(g_strip, x2, S(36), sw, H - S(36) - S(12));
         /* favorite passwords: small section, bottom right */
-        int fx = x2 + sw + S(16), fw = W - fx - S(12), fh = S(250), fy = H - fh - S(12);
+        int fx = x2 + sw + S(16), fw = W - fx - S(12), fh = S(170), fy = H - fh - S(12);
         if (fw < S(200)) fw = S(200);
         ptext(PG_SUMMARY, fx, fy, fw, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_SUMMARY, fx + fw / 2, fy + S(2), fw - fw / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26));
+        /* common type fusions: between the stars and the passwords */
+        int uh = S(N_FUSES * 24 + 12), uy = fy - S(14) - uh;
+        ptext(PG_SUMMARY, fx, uy - S(26), fw, S(22), "Common type fusions", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_fuses, fx, uy, fw, uh);
         ptext(PG_SUMMARY, fx, S(10), fw, S(22), "Guardian stars", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_stars, fx, S(36), fw, fy - S(36) - S(16));
+        place(g_stars, fx, S(36), fw, uy - S(26) - S(36) - S(10));
     }
     /* cards page */
     {
@@ -2008,6 +2073,7 @@ static void create_children(void)
     vlist_set_rows(&g_lists[L_RANK], ten, N_RULES);
     g_strip = CreateWindow("FMStrip", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     g_stars = CreateWindow("FMStars", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
+    g_fuses = CreateWindow("FMFuses", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     static const char *const sf_cols[] = { "Card", "Password", "Cost", "Owned" };
     static const int sf_w[] = { 200, 100, 70, 64 };
     vlist_create(&g_lists[L_SUM_FAV], L_SUM_FAV, p, 4, sf_cols, sf_w, "lccc", t_sumfav, c_sumfav);
@@ -2245,6 +2311,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     wc.lpfnWndProc = page_proc;
     wc.lpszClassName = "FMPage";
     wc.hbrBackground = br_panel;
+    RegisterClassEx(&wc);
+    wc.lpfnWndProc = fuses_proc;
+    wc.lpszClassName = "FMFuses";
     RegisterClassEx(&wc);
     wc.lpfnWndProc = stars_proc;
     wc.lpszClassName = "FMStars";
