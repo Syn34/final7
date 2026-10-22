@@ -10,6 +10,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <uxtheme.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +48,7 @@ static COLORREF letter_color(char c)
 
 /* ---- control ids ------------------------------------------------------------ */
 enum {
-    ID_REFRESH = 101, ID_ATTACH, ID_DETACH, ID_DEMO, ID_OVERLAY,
+    ID_REFRESH = 101, ID_ATTACH, ID_DETACH, ID_DEMO, ID_OVERLAY, ID_MENU,
     ID_TAB0 = 110,
     ID_TRACK = 120, ID_UNTRACK, ID_MOVEUP, ID_MOVEDN, ID_CLEAR, ID_RESETDEF,
     ID_PW_UNOWNED = 130, ID_PW_AFFORD, ID_PW_FAVONLY, ID_PW_FAV,
@@ -66,7 +67,7 @@ static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Card Overview", "Dr
 
 /* ---- globals ---------------------------------------------------------------- */
 static HINSTANCE g_inst;
-static HWND g_main, g_pages[N_PAGES], g_sumcard, g_strip, g_overlay;
+static HWND g_main, g_pages[N_PAGES], g_sumcard, g_strip, g_stars, g_overlay;
 static HIMAGELIST g_il;
 static HWND g_emu_combo, g_tier_combo, g_card_search, g_pw_search, g_log;
 static HWND g_btn[64];
@@ -86,7 +87,7 @@ static Attach g_pending_att;
 static char g_attach_err[400];
 static EmuProc g_emus[32];
 static int g_nemus;
-static char g_status[256] = "Not attached";
+static char g_status[256] = "Select attach from dropdown to connect";
 static COLORREF g_status_color = C_RED;
 
 #define MAX_TRACK 7
@@ -831,6 +832,17 @@ static double chance_for(int d, int live, char *note, int nlen)
     return p;
 }
 
+/* Chance of winning all of the Final 7 in a row (Seto 2nd, Guardian Sebek, Guardian Neku,
+ * Heishin 2nd, Seto 3rd, DarkNite, Nitemare): the product of each duel's estimate. The one
+ * you are fighting right now follows its live life points. */
+static double final7_chance(void)
+{
+    double p = 1.0;
+    for (int d = 32; d <= 38; d++)
+        p *= chance_for(d, duel_active() && g_tr.opponent == d, NULL, 0);
+    return p;
+}
+
 static void update_dstats(int force)
 {
     uint64_t t = now_ms();
@@ -1011,7 +1023,7 @@ static void detach_all(void)
     g_have_snap = 0;
     tracker_reset(&g_tr);
     g_have_prev = 0;
-    set_status("Not attached", C_RED);
+    set_status("Select attach from dropdown to connect", C_RED);
     InvalidateRect(g_main, NULL, FALSE);
     InvalidateRect(g_sumcard, NULL, FALSE);
 }
@@ -1100,7 +1112,6 @@ static void start_attach(int quiet)
     g_attaching = 1;
     g_progress = 0;
     logf_("Attaching to %s (pid %lu)...", g_attach_target.exe, g_attach_target.pid);
-    EnableWindow(g_btn[ID_ATTACH - 100], FALSE);
     HANDLE th = CreateThread(NULL, 0, attach_thread, NULL, 0, NULL);
     if (th) CloseHandle(th);
 }
@@ -1108,9 +1119,8 @@ static void start_attach(int quiet)
 static void on_attached(int ok)
 {
     g_attaching = 0;
-    EnableWindow(g_btn[ID_ATTACH - 100], TRUE);
     if (!ok) {
-        set_status("Not attached", C_RED);
+        set_status("Select attach from dropdown to connect", C_RED);
         logf_("%s", g_attach_err);
         if (!g_attach_quiet) MessageBox(g_main, g_attach_err, APP_NAME, MB_ICONWARNING);
         return;
@@ -1344,35 +1354,30 @@ static void paint_sumcard(HWND h)
     int x = S(16), y = S(12);
     text_at(dc, x, y, "RIGHT NOW", f_smallb, C_MUTED);
     y += S(20);
-    if (duel_active()) {
-        char lab[8], letter, line[96], pct[16], note[200];
-        int pow;
-        rank_label(g_rank_score, &letter, &pow, lab);
-        snprintf(line, sizeof line, "Dueling %s", duelist_name(g_tr.opponent));
-        text_at(dc, x, y, line, f_bold, C_GOLD);
-        y += S(26);
-        RECT lr = { x, y, x + S(150), y + S(60) };
-        draw_rank_label(dc, lr, g_rank_score, f_big);
-        double p = chance_for(g_tr.opponent, 1, note, sizeof note);
+    char line[96], pct[16];
+    if (duel_active()) snprintf(line, sizeof line, "Dueling %s", duelist_name(g_tr.opponent));
+    else snprintf(line, sizeof line, "%s", g_mode ? "No duel in progress" : "Not attached");
+    text_at(dc, x, y, line, f_bold, C_GOLD);
+    y += S(26);
+    RECT lr = { x, y, x + S(150), y + S(60) };
+    if (duel_active()) draw_rank_label(dc, lr, g_rank_score, f_big);
+    else text_rect(dc, lr, "-", f_big, C_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    snprintf(pct, sizeof pct, "-");
+    COLORREF pc = C_MUTED;
+    if (g_mode && snap_ok()) {
+        double p = final7_chance();
         snprintf(pct, sizeof pct, "%.0f%%", p * 100);
-        RECT pr = { W / 2, y, W - x, y + S(60) };
-        text_rect(dc, pr, pct, f_big, p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-        y += S(60);
-        snprintf(line, sizeof line, "rank score %d%s", g_rank_score, g_snap.table_live ? "" : " (est.)");
-        text_at(dc, x, y, line, f_small, C_MUTED);
-        RECT cr = { W / 2, y, W - x, y + S(18) };
-        text_rect(dc, cr, "chance to win", f_small, C_MUTED, DT_RIGHT | DT_SINGLELINE);
-        y += S(28);
-    } else {
-        text_at(dc, x, y, g_mode ? "No duel in progress" : "Not attached", f_bold, C_GOLD);
-        y += S(26);
-        RECT nr = { x, y, W - x, y + S(80) };
-        text_rect(dc, nr, g_mode ? "Your live rank, rank meter, stat breakdown and chance to win show up here when a "
-                                   "duel starts."
-                                 : "Start your emulator, load your save and press Attach (or Demo to try it).",
-                  f_small, C_MUTED, DT_WORDBREAK);
-        y += S(88);
+        pc = p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED);
     }
+    RECT pr = { W / 2, y, W - x, y + S(60) };
+    text_rect(dc, pr, pct, f_big, pc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    y += S(60);
+    if (duel_active()) snprintf(line, sizeof line, "rank score %d%s", g_rank_score, g_snap.table_live ? "" : " (est.)");
+    else snprintf(line, sizeof line, "%s", g_mode ? "rank shows when a duel starts" : "choose Attach from the Menu");
+    text_at(dc, x, y, line, f_small, C_MUTED);
+    RECT cr = { W / 2, y, W - x, y + S(18) };
+    text_rect(dc, cr, "Beat Final 7", f_small, C_MUTED, DT_RIGHT | DT_SINGLELINE);
+    y += S(28);
     y = draw_rank_meter(dc, x, y, W - 2 * x, duel_active(), g_rank_score);
     /* win bonus toggle */
     SetRect(&g_toggle_rc, x, y, W - x, y + S(22));
@@ -1475,6 +1480,97 @@ static LRESULT CALLBACK strip_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     return DefWindowProc(h, m, w, l);
 }
 
+/* ---- guardian star chart ---------------------------------------------------------------- */
+typedef struct { const char *name; COLORREF col; } Star;
+static const Star RING_A[4] = { { "Sun", RGB(0xff, 0xc4, 0x3d) }, { "Moon", RGB(0xc9, 0xd1, 0xe0) },
+                                { "Venus", RGB(0xff, 0x8f, 0xc7) }, { "Mercury", RGB(0x4f, 0xd6, 0xc4) } };
+static const Star RING_B[6] = { { "Mars", RGB(0xff, 0x5a, 0x4a) }, { "Jupiter", RGB(0xff, 0xa0, 0x4a) },
+                                { "Saturn", RGB(0xd8, 0xc0, 0x84) }, { "Uranus", RGB(0x6f, 0xe0, 0xf0) },
+                                { "Pluto", RGB(0xb4, 0x6e, 0xff) }, { "Neptune", RGB(0x5a, 0x8c, 0xff) } };
+
+static void arrow(HDC dc, double x0, double y0, double x1, double y1, double shrink, COLORREF col)
+{
+    double dx = x1 - x0, dy = y1 - y0, len = sqrt(dx * dx + dy * dy);
+    if (len < 1) return;
+    dx /= len; dy /= len;
+    x0 += dx * shrink; y0 += dy * shrink;
+    x1 -= dx * shrink; y1 -= dy * shrink;
+    HPEN pen = CreatePen(PS_SOLID, S(2), col);
+    HBRUSH br = CreateSolidBrush(col);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+    MoveToEx(dc, (int)x0, (int)y0, NULL);
+    LineTo(dc, (int)x1, (int)y1);
+    double hl = S(9), hw = S(5);
+    POINT tri[3] = { { (int)x1, (int)y1 },
+                     { (int)(x1 - dx * hl + dy * hw), (int)(y1 - dy * hl - dx * hw) },
+                     { (int)(x1 - dx * hl - dy * hw), (int)(y1 - dy * hl + dx * hw) } };
+    Polygon(dc, tri, 3);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(pen);
+    DeleteObject(br);
+}
+
+static void draw_ring(HDC dc, const Star *st, int n, int cx, int cy, int rad)
+{
+    double px[6], py[6];
+    for (int i = 0; i < n; i++) {
+        double a = -1.5707963 + i * 6.2831853 / n;   /* start at the top, clockwise */
+        px[i] = cx + rad * cos(a);
+        py[i] = cy + rad * sin(a);
+    }
+    int nr = S(26);
+    for (int i = 0; i < n; i++) arrow(dc, px[i], py[i], px[(i + 1) % n], py[(i + 1) % n], nr + S(3), C_MUTED);
+    for (int i = 0; i < n; i++) {
+        HBRUSH b = CreateSolidBrush(C_PANEL2);
+        HPEN p = CreatePen(PS_SOLID, S(2), st[i].col);
+        HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, p);
+        Ellipse(dc, (int)px[i] - nr, (int)py[i] - nr, (int)px[i] + nr, (int)py[i] + nr);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(b);
+        DeleteObject(p);
+        RECT t = { (int)px[i] - nr, (int)py[i] - nr, (int)px[i] + nr, (int)py[i] + nr };
+        text_rect(dc, t, st[i].name, f_smallb, st[i].col, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+}
+
+static void paint_stars(HWND h)
+{
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    int W = rc.right, H = rc.bottom;
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
+    HGDIOBJ ob = SelectObject(dc, bm);
+    fill(dc, 0, 0, W, H, C_PANEL2);
+    frame(dc, rc, C_LINE);
+    int legend = S(26);
+    int ch = H - legend;
+    int rad = ch / 2 - S(34);
+    if (rad > W / 4 - S(34)) rad = W / 4 - S(34);
+    if (rad < S(30)) rad = S(30);
+    draw_ring(dc, RING_A, 4, W / 4, ch / 2 + S(4), rad);
+    draw_ring(dc, RING_B, 6, W * 3 / 4, ch / 2 + S(4), rad);
+    RECT lr = { S(10), H - legend, W - S(10), H - S(6) };
+    text_rect(dc, lr, "Arrow points at the star it beats: the winner gets +500 ATK/DEF in battle.", f_small, C_MUTED,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, ob);
+    DeleteObject(bm);
+    DeleteDC(dc);
+    EndPaint(h, &ps);
+}
+
+static LRESULT CALLBACK stars_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_PAINT) { paint_stars(h); return 0; }
+    if (m == WM_ERASEBKGND) return 1;
+    return DefWindowProc(h, m, w, l);
+}
+
 /* ---- overlay ------------------------------------------------------------------------ */
 static void paint_overlay(HWND h)
 {
@@ -1516,7 +1612,7 @@ static LRESULT CALLBACK overlay_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     switch (m) {
     case WM_PAINT: paint_overlay(h); return 0;
     case WM_ERASEBKGND: return 1;
-    case WM_DESTROY: g_overlay = NULL; InvalidateRect(g_btn[ID_OVERLAY - 100], NULL, FALSE); return 0;
+    case WM_DESTROY: g_overlay = NULL; return 0;
     }
     return DefWindowProc(h, m, w, l);
 }
@@ -1529,7 +1625,6 @@ static void toggle_overlay(void)
     g_overlay = CreateWindowEx(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "FMOverlay", APP_NAME,
                                WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
                                r.right - r.left, r.bottom - r.top, NULL, NULL, g_inst, NULL);
-    InvalidateRect(g_btn[ID_OVERLAY - 100], NULL, FALSE);
 }
 
 /* ---- layout -------------------------------------------------------------------------- */
@@ -1560,13 +1655,9 @@ static void layout(void)
     int W = rc.right, H = rc.bottom;
     /* top-right controls */
     int x = W - S(14), y = S(10), bh = S(28);
-    struct { int id, w; } top[] = { { ID_OVERLAY, 80 }, { ID_DEMO, 64 }, { ID_DETACH, 72 }, { ID_ATTACH, 84 }, { ID_REFRESH, 70 } };
-    for (int i = 0; i < 5; i++) {
-        x -= S(top[i].w);
-        place(g_btn[top[i].id - 100], x, y, S(top[i].w), bh);
-        x -= S(6);
-    }
-    x -= S(250);
+    x -= S(96);
+    place(g_btn[ID_MENU - 100], x, y, S(96), bh);
+    x -= S(6) + S(250);
     place(g_emu_combo, x, y + S(1), S(250), S(300));
     for (int i = 0; i < N_PAGES; i++) place(g_btn[ID_TAB0 - 100 + i], S(12) + i * S(128), S(HEADER_H), S(124), S(32));
 
@@ -1585,7 +1676,7 @@ static void layout(void)
         place(g_lists[L_RANK].hwnd, S(12), ch + S(48), lw, H - ch - S(48) - S(12));
         /* tracked cards: one vertical column */
         int sw = S(102);
-        ptext(PG_SUMMARY, x2, S(10), S(260), S(22), "Tracked cards  (in deck)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, x2, S(10), sw + S(14), S(22), "Tracked cards", NULL, &f_bold, C_GOLD, DT_SINGLELINE | DT_END_ELLIPSIS);
         place(g_strip, x2, S(36), sw, H - S(36) - S(12));
         /* favorite passwords: small section, bottom right */
         int fx = x2 + sw + S(16), fw = W - fx - S(12), fh = S(250), fy = H - fh - S(12);
@@ -1593,6 +1684,8 @@ static void layout(void)
         ptext(PG_SUMMARY, fx, fy, fw, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_SUMMARY, fx + fw / 2, fy + S(2), fw - fw / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26));
+        ptext(PG_SUMMARY, fx, S(10), fw, S(22), "Guardian star chart", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_stars, fx, S(36), fw, fy - S(36) - S(16));
     }
     /* cards page */
     {
@@ -1739,7 +1832,7 @@ static void draw_button(DRAWITEMSTRUCT *d)
         text_rect(dc, t, text, f_ui, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         return;
     }
-    int primary = id == ID_ATTACH || id == ID_TRACK;
+    int primary = id == ID_MENU || id == ID_TRACK;
     int active = id == ID_OVERLAY && g_overlay;
     COLORREF bg = primary ? (pressed ? RGB(0xf0, 0xc7, 0x6a) : C_GOLD) : (pressed || active ? C_LINE : C_PANEL2);
     if (disabled) bg = C_PANEL;
@@ -1754,8 +1847,36 @@ static void draw_button(DRAWITEMSTRUCT *d)
     SelectObject(dc, op);
     DeleteObject(b);
     DeleteObject(p);
-    text_rect(dc, r, text, f_bold, disabled ? C_MUTED : (primary ? RGB(0x1b, 0x14, 0x06) : C_TEXT),
+    RECT tr = r;
+    if (id == ID_MENU) {   /* down-arrow */
+        tr.right -= S(16);
+        int cx = r.right - S(16), cy = (r.top + r.bottom) / 2;
+        POINT tri[3] = { { cx - S(5), cy - S(2) }, { cx + S(5), cy - S(2) }, { cx, cy + S(4) } };
+        HBRUSH ab = CreateSolidBrush(RGB(0x1b, 0x14, 0x06));
+        HGDIOBJ o1 = SelectObject(dc, ab), o2 = SelectObject(dc, GetStockObject(NULL_PEN));
+        Polygon(dc, tri, 3);
+        SelectObject(dc, o1);
+        SelectObject(dc, o2);
+        DeleteObject(ab);
+    }
+    text_rect(dc, tr, text, f_bold, disabled ? C_MUTED : (primary ? RGB(0x1b, 0x14, 0x06) : C_TEXT),
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+static void show_main_menu(void)
+{
+    HMENU m = CreatePopupMenu();
+    AppendMenu(m, MF_STRING | (g_attaching ? MF_GRAYED : 0), ID_ATTACH, "Attach");
+    AppendMenu(m, MF_STRING | (g_mode ? 0 : MF_GRAYED), ID_DETACH, "Detach");
+    AppendMenu(m, MF_STRING, ID_REFRESH, "Refresh emulator list");
+    AppendMenu(m, MF_SEPARATOR, 0, NULL);
+    AppendMenu(m, MF_STRING | (g_mode == 2 ? MF_CHECKED : 0), ID_DEMO, "Demo");
+    AppendMenu(m, MF_STRING | (g_overlay ? MF_CHECKED : 0), ID_OVERLAY, "Overlay");
+    RECT r;
+    GetWindowRect(g_btn[ID_MENU - 100], &r);
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom + S(2), 0, g_main, NULL);
+    DestroyMenu(m);
+    if (cmd) PostMessage(g_main, WM_COMMAND, cmd, 0);
 }
 
 static HWND mkbutton(HWND parent, int id, const char *text)
@@ -1863,11 +1984,7 @@ static void create_children(void)
                                g_main, (HMENU)(INT_PTR)ID_EMU, g_inst, NULL);
     SendMessage(g_emu_combo, WM_SETFONT, (WPARAM)f_ui, TRUE);
     SetWindowTheme(g_emu_combo, L"DarkMode_CFD", NULL);
-    mkbutton(g_main, ID_REFRESH, "Refresh");
-    mkbutton(g_main, ID_ATTACH, "Attach");
-    mkbutton(g_main, ID_DETACH, "Detach");
-    mkbutton(g_main, ID_DEMO, "Demo");
-    mkbutton(g_main, ID_OVERLAY, "Overlay");
+    mkbutton(g_main, ID_MENU, "Menu");
 
     static const char *const pool_cols[] = { "Card", "Chance", "Owned" };
     static const int pool_w[] = { 200, 70, 64 };
@@ -1881,6 +1998,7 @@ static void create_children(void)
     for (int i = 0; i < N_RULES; i++) ten[i] = i;
     vlist_set_rows(&g_lists[L_RANK], ten, N_RULES);
     g_strip = CreateWindow("FMStrip", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
+    g_stars = CreateWindow("FMStars", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     static const char *const sf_cols[] = { "Card", "Password", "Cost", "Owned" };
     static const int sf_w[] = { 200, 100, 70, 64 };
     vlist_create(&g_lists[L_SUM_FAV], L_SUM_FAV, p, 4, sf_cols, sf_w, "lccc", t_sumfav, c_sumfav);
@@ -1994,6 +2112,7 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         int id = LOWORD(w), code = HIWORD(w);
         if (id >= ID_TAB0 && id < ID_TAB0 + N_PAGES) { show_page(id - ID_TAB0); return 0; }
         switch (id) {
+        case ID_MENU: show_main_menu(); break;
         case ID_REFRESH: refresh_emus(); logf_("Found %d emulator process(es).", g_nemus); break;
         case ID_ATTACH: start_attach(0); break;
         case ID_DETACH: detach_all(); logf_("Detached."); break;
@@ -2106,6 +2225,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     wc.lpfnWndProc = page_proc;
     wc.lpszClassName = "FMPage";
     wc.hbrBackground = br_panel;
+    RegisterClassEx(&wc);
+    wc.lpfnWndProc = stars_proc;
+    wc.lpszClassName = "FMStars";
     RegisterClassEx(&wc);
     wc.lpfnWndProc = strip_proc;
     wc.lpszClassName = "FMStrip";
