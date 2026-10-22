@@ -579,7 +579,8 @@ static void pool_text(const uint16_t *pool, int id, int col, char *b, int n)
 }
 static COLORREF pool_color(int id)
 {
-    return (snap_ok() && owned_total(&g_snap, id) == 0) ? C_GOLD : C_TEXT;
+    (void)id;
+    return C_TEXT;
 }
 static void t_detail(int id, int col, char *b, int n) { pool_text(g_detail_pool, id, col, b, n); }
 static COLORREF c_pool(int id, COLORREF *bg) { (void)bg; return pool_color(id); }
@@ -842,7 +843,7 @@ static void fill_detail(void)
         g_detail_pool = tier == 3 ? g_pools[d][0] : g_pools[d][tier + 1];
         compute_turn1(d);
         snprintf(t_detail_note, sizeof t_detail_note, "%s Turn 1 = chance %s can play the card on their first turn "
-                 "(in their opening 5 cards or fused from them). Gold = a card you don't own yet.",
+                 "(in their opening 5 cards or fused from them).",
                  tier == 3 ? "Chance = each card's odds in the CPU's deck draw." : "Chance = the drop odds.",
                  DUELISTS[d - 1]);
         if (duel_active() && g_tr.opponent == d) {
@@ -1552,9 +1553,7 @@ static void paint_sumcard(HWND h)
     if (g_mode && snap_ok()) {
         double p = final7_chance();
         if (p >= 0) {
-            if (p > 0 && p < 0.001) snprintf(pct, sizeof pct, "<0.1%%");
-            else if (p < 0.1) snprintf(pct, sizeof pct, "%.1f%%", p * 100);
-            else snprintf(pct, sizeof pct, "%.0f%%", p * 100);
+            snprintf(pct, sizeof pct, "%.2f%%", p * 100);
             pc = p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED);
             if (g_sim_running) f7label = "Beat Final 7 (updating...)";
         } else {
