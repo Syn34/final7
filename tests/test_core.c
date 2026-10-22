@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "fm.h"
+#include "sim.h"
 #ifdef TEST_WIN32
 #include <windows.h>
 __declspec(dllexport) uint8_t *RAM;   /* mimics DuckStation's exported RAM pointer */
@@ -40,6 +41,13 @@ int main(void)
     CHECK(rank_breakdown(&quick, t, 1, rl) >= 90);
 
     CHECK(!strcmp(CARDS[0].password, "89631139"));
+    CHECK(sim_fuse(4, 425) == 613);   /* Baby Dragon + Thunder Dragon = Twin-headed Thunder Dragon */
+    {
+        uint16_t weak[N_CARDS] = {0}, deck[40];
+        weak[7] = 2048;                /* a CPU deck of nothing but Mushroom Man (800 ATK) */
+        for (int i = 0; i < 40; i++) deck[i] = (uint16_t)(1 + (i % 3));   /* Blue-eyes, Mystical Elf, Hitotsu-me */
+        CHECK(sim_win_rate(deck, weak, 200, 1) > 0.8);
+    }
     CHECK(card_is_monster(1) && !card_is_monster(330 /* a magic card id in range */) == !card_is_monster(330));
 
     /* full duel cycle through the tracker */

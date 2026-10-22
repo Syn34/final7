@@ -14,7 +14,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - name: Core tests (host)
         run: |
-          gcc -O2 -Wall -Isrc tests/test_core.c src/game.c src/demo.c src/cards_data.c -lm -o test_core
+          gcc -O2 -Wall -Isrc tests/test_core.c src/game.c src/demo.c src/sim.c src/fusion_data.c src/cards_data.c -lm -o test_core
           ./test_core
       - name: Build final7.exe
         run: ./build.sh

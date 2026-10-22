@@ -11,6 +11,8 @@ enum { STAR_MARS = 1, STAR_JUPITER, STAR_SATURN, STAR_URANUS, STAR_PLUTO, STAR_N
        STAR_MERCURY, STAR_SUN, STAR_MOON, STAR_VENUS };
 
 int  stars_load_from_disc(const char *path, char *err, int errlen);
+int  disc_find_in_folder(const char *folder, char *out, int outlen);   /* a Forbidden Memories image */
+int  disc_read_wa(const char *path, uint32_t off, void *buf, uint32_t n); /* bytes of WA_MRG.MRG */
 int  stars_autoload(const char *folder);
 int  stars_have(void);
 int  stars_save(const char *path);

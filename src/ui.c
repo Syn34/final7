@@ -20,6 +20,7 @@
 #include "fm.h"
 #include "art.h"
 #include "stars.h"
+#include "sim.h"
 #include <commdlg.h>
 
 /* ---- palette --------------------------------------------------------------- */
@@ -65,6 +66,7 @@ static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Card Overview", "Dr
 #define APP_NAME "final7"
 
 #define WM_APP_ATTACHED (WM_APP + 1)
+#define WM_APP_SIMDONE  (WM_APP + 2)
 #define TIMER_POLL 1
 
 /* ---- globals ---------------------------------------------------------------- */
@@ -119,6 +121,8 @@ static int g_favs[N_CARDS], g_nfavs;
 static char g_dir[MAX_PATH];
 
 typedef struct { int fw, fl, sw, sl, w, l, best; double chance; } DStat;
+static double g_simwin[N_DUELISTS + 1];    /* simulated first-try win rate per duelist */
+static uint8_t g_simok[N_DUELISTS + 1];
 static DStat g_dstat[N_DUELISTS + 1];
 static uint64_t g_dstat_t;
 
@@ -654,7 +658,8 @@ static void t_dropduel(int d, int col, char *b, int n)
     switch (col) {
     case 0: snprintf(b, n, "%d", d); break;
     case 1: snprintf(b, n, "%s", DUELISTS[d - 1]); break;
-    default: snprintf(b, n, "%s", g_have_pool[d] ? "learned" : "-"); break;
+    case 2: snprintf(b, n, "%s", g_have_pool[d] ? "yes" : "-"); break;
+    default: if (g_simok[d]) snprintf(b, n, "%.0f%%", g_simwin[d] * 100); else b[0] = 0; break;
     }
 }
 static COLORREF c_dropduel(int d, COLORREF *bg)
@@ -834,15 +839,109 @@ static double chance_for(int d, int live, char *note, int nlen)
     return p;
 }
 
-/* Chance of winning all of the Final 7 in a row (Seto 2nd, Guardian Sebek, Guardian Neku,
- * Heishin 2nd, Seto 3rd, DarkNite, Nitemare): the product of each duel's estimate. The one
- * you are fighting right now follows its live life points. */
+/* ---- deck-vs-deck simulation (sim.c) ------------------------------------------------------
+ * Your current deck is played against each duelist's deck pool; Beat Final 7 is the
+ * chance to win all seven final duels first try: the product of the seven win rates. */
+#define SIM_RUNS 800
+static uint32_t g_sim_key;                 /* deck + pools the results belong to */
+static volatile LONG g_sim_running;
+static uint16_t g_sim_deck[40];
+static uint16_t g_sim_pools[N_DUELISTS + 1][N_CARDS];
+static uint8_t g_sim_have[N_DUELISTS + 1];
+static double g_sim_out[N_DUELISTS + 1];
+static uint32_t g_sim_out_key;
+static int g_pool_gen;                     /* bumps when pools are added */
+
+static uint32_t sim_key_now(void)
+{
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 40; i++) h = (h ^ g_snap.deck[i]) * 16777619u;
+    return h ^ (uint32_t)g_pool_gen * 0x9E3779B9u;
+}
+
+static DWORD WINAPI sim_thread(LPVOID p)
+{
+    uint32_t key = (uint32_t)(uintptr_t)p;
+    for (int d = 1; d <= N_DUELISTS; d++)
+        g_sim_out[d] = g_sim_have[d] ? sim_win_rate(g_sim_deck, g_sim_pools[d], SIM_RUNS, key ^ (uint32_t)(d * 7919)) : -1;
+    g_sim_out_key = key;
+    PostMessage(g_main, WM_APP_SIMDONE, 0, 0);
+    return 0;
+}
+
+static void sim_maybe_start(void)
+{
+    if (!snap_ok() || g_sim_running) return;
+    uint32_t key = sim_key_now();
+    if (key == g_sim_key) return;
+    memcpy(g_sim_deck, g_snap.deck, sizeof g_sim_deck);
+    for (int d = 1; d <= N_DUELISTS; d++) {
+        g_sim_have[d] = g_have_pool[d];
+        if (g_have_pool[d]) memcpy(g_sim_pools[d], g_pools[d][0], sizeof g_sim_pools[d]);
+    }
+    g_sim_running = 1;
+    HANDLE th = CreateThread(NULL, 0, sim_thread, (LPVOID)(uintptr_t)key, 0, NULL);
+    if (th) CloseHandle(th); else g_sim_running = 0;
+}
+
+static void sim_done(void)
+{
+    for (int d = 1; d <= N_DUELISTS; d++) {
+        g_simok[d] = g_sim_out[d] >= 0;
+        g_simwin[d] = g_sim_out[d];
+    }
+    g_sim_key = g_sim_out_key;
+    g_sim_running = 0;
+    InvalidateRect(g_sumcard, NULL, FALSE);
+    InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
+    sim_maybe_start();   /* the deck may have changed meanwhile */
+}
+
+/* -1 when a Final 7 deck pool is still missing */
 static double final7_chance(void)
 {
     double p = 1.0;
-    for (int d = 32; d <= 38; d++)
-        p *= chance_for(d, duel_active() && g_tr.opponent == d, NULL, 0);
+    for (int d = 32; d <= 38; d++) {
+        if (!g_simok[d]) return -1;
+        p *= g_simwin[d];
+    }
     return p;
+}
+
+/* ---- deck pools straight from the disc ------------------------------------------------------
+ * WA_MRG.MRG holds one 6144-byte record per duelist at 15308800 + 6144 * id: the deck pool,
+ * then the S/A-POW, B/C/D and S/A-TEC drop pools, 1460 bytes apart, each summing to 2048. */
+static char g_disc[MAX_PATH];
+
+static int load_pools_from_disc(const char *path)
+{
+    static uint8_t rec[6144];
+    int got = 0;
+    for (int d = 1; d <= N_DUELISTS; d++) {
+        if (!disc_read_wa(path, 15308800u + 6144u * (uint32_t)d, rec, sizeof rec)) break;
+        uint16_t arr[4][N_CARDS];
+        int ok = 1;
+        for (int t = 0; t < 4; t++) {
+            unsigned sum = 0;
+            for (int i = 0; i < N_CARDS; i++) {
+                arr[t][i] = (uint16_t)(rec[t * 1460 + 2 * i] | (rec[t * 1460 + 2 * i + 1] << 8));
+                sum += arr[t][i];
+            }
+            if (sum != 2048) ok = 0;
+        }
+        if (!ok) continue;
+        memcpy(g_pools[d], arr, sizeof arr);
+        g_have_pool[d] = 1;
+        got++;
+    }
+    if (got) { save_pools(); g_pool_gen++; }
+    return got;
+}
+
+static int all_pools(void)
+{
+    for (int d = 1; d <= N_DUELISTS; d++) if (!g_have_pool[d]) return 0;
+    return 1;
 }
 
 static void update_dstats(int force)
@@ -998,6 +1097,7 @@ static void process_snapshot(void)
     }
 
     update_dstats(0);
+    sim_maybe_start();
 
     uint32_t sig = g_snap.starchips * 2654435761u;
     for (int id = 1; id <= N_CARDS; id++) sig = sig * 31 + (uint32_t)g_prev[id];
@@ -1366,10 +1466,17 @@ static void paint_sumcard(HWND h)
     else text_rect(dc, lr, "-", f_big, C_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     snprintf(pct, sizeof pct, "-");
     COLORREF pc = C_MUTED;
+    const char *f7label = "Beat Final 7";
     if (g_mode && snap_ok()) {
         double p = final7_chance();
-        snprintf(pct, sizeof pct, "%.0f%%", p * 100);
-        pc = p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED);
+        if (p >= 0) {
+            if (p > 0 && p < 0.005) snprintf(pct, sizeof pct, "<1%%");
+            else snprintf(pct, sizeof pct, "%.0f%%", p * 100);
+            pc = p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED);
+        } else {
+            snprintf(pct, sizeof pct, "?");
+            f7label = g_sim_running ? "Beat Final 7 (working...)" : "Beat Final 7 (needs disc)";
+        }
     }
     RECT pr = { W / 2, y, W - x, y + S(60) };
     text_rect(dc, pr, pct, f_big, pc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -1378,7 +1485,7 @@ static void paint_sumcard(HWND h)
     else snprintf(line, sizeof line, "%s", g_mode ? "rank shows when a duel starts" : "choose Attach from the Menu");
     text_at(dc, x, y, line, f_small, C_MUTED);
     RECT cr = { W / 2, y, W - x, y + S(18) };
-    text_rect(dc, cr, "Beat Final 7", f_small, C_MUTED, DT_RIGHT | DT_SINGLELINE);
+    text_rect(dc, cr, f7label, f_small, C_MUTED, DT_RIGHT | DT_SINGLELINE);
     y += S(28);
     y = draw_rank_meter(dc, x, y, W - 2 * x, duel_active(), g_rank_score);
     /* win bonus toggle */
@@ -1917,6 +2024,23 @@ static void draw_button(DRAWITEMSTRUCT *d)
 
 static void star_cache_path(char *out) { data_path(out, "star_icons.bin"); }
 
+static void load_from_disc(const char *file, int quiet)
+{
+    char err[300], cache[MAX_PATH];
+    int stars = stars_load_from_disc(file, err, sizeof err);
+    if (stars) { star_cache_path(cache); stars_save(cache); InvalidateRect(g_stars, NULL, FALSE); }
+    int pools = load_pools_from_disc(file);
+    if (stars || pools) {
+        snprintf(g_disc, sizeof g_disc, "%s", file);
+        logf_("Read %s from %s", pools ? "star icons and every duelist's deck/drop pools" : "star icons", file);
+        InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
+        if (g_detail_duelist) fill_detail();
+        sim_maybe_start();
+    } else if (!quiet) {
+        MessageBox(g_main, err, APP_NAME, MB_ICONWARNING);
+    }
+}
+
 static void pick_star_disc(void)
 {
     char file[MAX_PATH] = "";
@@ -1928,15 +2052,7 @@ static void pick_star_disc(void)
     of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     of.lpstrTitle = "Choose your Yu-Gi-Oh! Forbidden Memories disc image";
     if (!GetOpenFileNameA(&of)) return;
-    char err[300], cache[MAX_PATH];
-    if (stars_load_from_disc(file, err, sizeof err)) {
-        star_cache_path(cache);
-        stars_save(cache);
-        logf_("Loaded guardian star icons from %s", file);
-        InvalidateRect(g_stars, NULL, FALSE);
-    } else {
-        MessageBox(g_main, err, APP_NAME, MB_ICONWARNING);
-    }
+    load_from_disc(file, 0);
 }
 
 static void show_main_menu(void)
@@ -1949,7 +2065,7 @@ static void show_main_menu(void)
     AppendMenu(m, MF_STRING | (g_mode == 2 ? MF_CHECKED : 0), ID_DEMO, "Demo");
     AppendMenu(m, MF_STRING | (g_overlay ? MF_CHECKED : 0), ID_OVERLAY, "Overlay");
     AppendMenu(m, MF_SEPARATOR, 0, NULL);
-    AppendMenu(m, MF_STRING, ID_STARDISC, "Load star icons from game disc...");
+    AppendMenu(m, MF_STRING, ID_STARDISC, "Load data from game disc...");
     RECT r;
     GetWindowRect(g_btn[ID_MENU - 100], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom + S(2), 0, g_main, NULL);
@@ -2108,9 +2224,9 @@ static void create_children(void)
 
     /* drops page */
     p = g_pages[PG_DROPS];
-    static const char *const dd_cols[] = { "#", "Duelist", "Tables" };
-    static const int dd_w[] = { 36, 170, 76 };
-    vlist_create(&g_lists[L_DROPDUEL], L_DROPDUEL, p, 3, dd_cols, dd_w, "clc", t_dropduel, c_dropduel);
+    static const char *const dd_cols[] = { "#", "Duelist", "Tables", "Win %" };
+    static const int dd_w[] = { 36, 150, 56, 60 };
+    vlist_create(&g_lists[L_DROPDUEL], L_DROPDUEL, p, 4, dd_cols, dd_w, "clcc", t_dropduel, c_dropduel);
     vlist_set_rows(&g_lists[L_DROPDUEL], dl, N_DUELISTS);
     g_tier_combo = CreateWindow("COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 0, 0, 10, 10, p,
                                 (HMENU)(INT_PTR)ID_TIER, g_inst, NULL);
@@ -2183,6 +2299,9 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
             refresh_emus();
             if (g_nemus && !g_mode) start_attach(1);
         }
+        return 0;
+    case WM_APP_SIMDONE:
+        sim_done();
         return 0;
     case WM_APP_ATTACHED:
         on_attached((int)w);
@@ -2278,11 +2397,17 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     {
         char cache[MAX_PATH], exedir[MAX_PATH];
         data_path(cache, "star_icons.bin");
-        if (!stars_load(cache)) {
+        int have_stars = stars_load(cache);
+        if (!have_stars || !all_pools()) {
             GetModuleFileName(NULL, exedir, MAX_PATH);
             char *sl = strrchr(exedir, '\\');
             if (sl) *sl = 0;
-            if (stars_autoload(exedir)) stars_save(cache);
+            char disc[MAX_PATH], err[256];
+            if (disc_find_in_folder(exedir, disc, sizeof disc)) {
+                snprintf(g_disc, sizeof g_disc, "%s", disc);
+                if (!have_stars && stars_load_from_disc(disc, err, sizeof err)) stars_save(cache);
+                if (!all_pools()) load_pools_from_disc(disc);
+            }
         }
     }
 

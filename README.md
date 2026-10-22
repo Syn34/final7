@@ -23,7 +23,7 @@ It's a single Windows program written in C. **Download [`final7.exe`](final7.exe
 
 If the emulator runs as administrator, run final7 as administrator too. To look around without the game, choose **Demo** from the Menu (or start it with `final7.exe --demo`). It simulates a game playing endless duels.
 
-The guardian star icons are read from your Forbidden Memories disc image: final7 looks for a `.bin`/`.iso` in its own folder on startup, or use **Menu → Load star icons from game disc...**. Your tracked items, favorites, duel history and learned duelist tables are saved in a `final7_data` folder next to the exe.
+The guardian star icons and every duelist's deck and drop pools are read from your Forbidden Memories disc image: final7 looks for a `.bin`/`.iso` in its own folder on startup, or use **Menu → Load data from game disc...**. Your tracked items, favorites, duel history and learned duelist tables are saved in a `final7_data` folder next to the exe.
 
 ### Supported emulators
 | Emulator | How the PS1 memory is found |
@@ -38,7 +38,7 @@ If a method fails (for example after an emulator update), final7 falls back to s
 
 ## How the numbers work
 * **Rank.** Every duel starts at 50 points. Each stat adds or removes points through a table that the game loads during duels, and final7 reads that same table live. 0–49 is TEC and 50–99 is POW, so a lower score means a better TEC rank. *"Include +2 win bonus"* adds what a normal win by LP is worth (an Exodia win is +40, a deck-out win is −40). With it ticked, the badge shows the rank you'd get if you won right now.
-* **Beat Final 7.** The chance of winning all of the Final 7 in a row (Seto 2nd, Guardian Sebek, Guardian Neku, Heishin 2nd, Seto 3rd, DarkNite, Nitemare), multiplying the estimate for each duel. Each estimate is a guess, not a game value: It starts from a rough difficulty guess for each duelist, moves toward your real record as you play more, and adjusts for the ATK of your five strongest deck monsters against the CPU's deck (once seen). During a duel it also follows the life-point gap.
+* **Beat Final 7.** Your current deck is played against each of the Final 7 (Seto 2nd, Guardian Sebek, Guardian Neku, Heishin 2nd, Seto 3rd, DarkNite, Nitemare) in a few hundred quick simulated duels per opponent, with their CPU decks drawn from the real deck pools read off your disc. The chance to beat all seven first try is the seven win rates multiplied together. The simulation uses real fusion results (up to 3-card chains), equips, Raigeki/Dark Hole and FM's battle damage, but leaves out guardian stars, field bonuses, traps and defense position, so treat it as a deck-strength comparison. The Drops tab shows the same simulated win % for every duelist. It recalculates whenever your deck changes.
 * **Drops.** These are the opponent's real drop weights out of 2048 for the S/A-POW, B/C/D or S/A-TEC table, matching your current rank.
 
 ## Building from source (optional)
@@ -46,7 +46,7 @@ The exe in the repo is already built. To rebuild it you need MinGW-w64:
 * Linux/macOS: `./build.sh` (Debian/Ubuntu: `sudo apt install gcc-mingw-w64-x86-64`)
 * Windows: `build.bat` with MinGW-w64 on PATH (for example from [winlibs.com](https://winlibs.com))
 
-Tests: `gcc -Isrc tests/test_core.c src/game.c src/demo.c src/cards_data.c -lm && ./a.out`. Add `src/emu.c -DTEST_WIN32` in a Windows build to also test attaching through the memory scan and a DuckStation-style `RAM` export.
+Tests: `gcc -Isrc tests/test_core.c src/game.c src/demo.c src/sim.c src/fusion_data.c src/cards_data.c -lm && ./a.out`. Add `src/emu.c -DTEST_WIN32` in a Windows build to also test attaching through the memory scan and a DuckStation-style `RAM` export.
 
 ```
 src/ui.c          Win32 interface (tabs, lists, rank badge, overlay)

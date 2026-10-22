@@ -83,27 +83,74 @@ static uint32_t ps1_color(uint16_t c)
     return 0xFF000000u | (r << 16) | (g << 8) | b;
 }
 
-int stars_load_from_disc(const char *path, char *err, int errlen)
+/* Open a disc image and locate WA_MRG.MRG; on success d->f stays open. */
+static int open_wa(const char *path, Disc *d, uint32_t *flba, uint32_t *fsize, char *err, int errlen)
 {
-    Disc d = { fopen(path, "rb"), 0, 0 };
-    if (!d.f) { snprintf(err, errlen, "Could not open %s", path); return 0; }
+    d->f = fopen(path, "rb");
+    d->raw = 0;
+    if (!d->f) { snprintf(err, errlen, "Could not open %s", path); return 0; }
     uint8_t head[16];
     static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
-    if (fread(head, 1, 16, d.f) == 16 && !memcmp(head, sync, 12)) d.raw = 1;
+    if (fread(head, 1, 16, d->f) == 16 && !memcmp(head, sync, 12)) d->raw = 1;
     uint8_t pvd[2048];
-    if (!read_sector(&d, 16, pvd) || memcmp(pvd + 1, "CD001", 5)) {
-        fclose(d.f);
+    if (!read_sector(d, 16, pvd) || memcmp(pvd + 1, "CD001", 5)) {
+        fclose(d->f);
         snprintf(err, errlen, "%s is not a PlayStation disc image.", path);
         return 0;
     }
-    uint32_t root_lba, root_size, flba, fsize;
+    uint32_t root_lba, root_size;
     memcpy(&root_lba, pvd + 156 + 2, 4);
     memcpy(&root_size, pvd + 156 + 10, 4);
-    if (!find_file(&d, root_lba, root_size, "WA_MRG.MRG", 0, &flba, &fsize) || fsize < CLUT_OFF + 32) {
-        fclose(d.f);
+    if (!find_file(d, root_lba, root_size, "WA_MRG.MRG", 0, flba, fsize) || *fsize < CLUT_OFF + 32) {
+        fclose(d->f);
         snprintf(err, errlen, "WA_MRG.MRG was not found on this disc. Is it Yu-Gi-Oh! Forbidden Memories (USA)?");
         return 0;
     }
+    return 1;
+}
+
+int disc_read_wa(const char *path, uint32_t off, void *buf, uint32_t n)
+{
+    Disc d;
+    uint32_t flba, fsize;
+    char err[256];
+    if (!open_wa(path, &d, &flba, &fsize, err, sizeof err)) return 0;
+    int ok = off + n <= fsize && read_file_bytes(&d, flba, off, buf, n);
+    fclose(d.f);
+    return ok;
+}
+
+int disc_find_in_folder(const char *folder, char *out, int outlen)
+{
+    static const char *const pats[] = { "*.bin", "*.iso", "*.img" };
+    for (int k = 0; k < 3; k++) {
+        char pat[MAX_PATH];
+        snprintf(pat, sizeof pat, "%s\\%s", folder, pats[k]);
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            char full[MAX_PATH], err[256];
+            Disc d;
+            uint32_t flba, fsize;
+            snprintf(full, sizeof full, "%s\\%s", folder, fd.cFileName);
+            if (open_wa(full, &d, &flba, &fsize, err, sizeof err)) {
+                fclose(d.f);
+                FindClose(h);
+                snprintf(out, outlen, "%s", full);
+                return 1;
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    return 0;
+}
+
+int stars_load_from_disc(const char *path, char *err, int errlen)
+{
+    Disc d;
+    uint32_t flba, fsize;
+    if (!open_wa(path, &d, &flba, &fsize, err, errlen)) return 0;
     uint8_t clut_raw[32];
     uint8_t rows[2][16 * 128];
     int ok = read_file_bytes(&d, flba, CLUT_OFF, clut_raw, 32) &&
@@ -152,24 +199,11 @@ int stars_load(const char *path)
     return ok;
 }
 
-/* Look for a .bin / .iso next to the exe and pull the icons from the first one that works. */
+/* Look for a disc image next to the exe and pull the icons from it. */
 int stars_autoload(const char *folder)
 {
-    static const char *const pats[] = { "*.bin", "*.iso", "*.img" };
-    for (int k = 0; k < 3; k++) {
-        char pat[MAX_PATH];
-        snprintf(pat, sizeof pat, "%s\\%s", folder, pats[k]);
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pat, &fd);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        do {
-            char full[MAX_PATH], err[256];
-            snprintf(full, sizeof full, "%s\\%s", folder, fd.cFileName);
-            if (stars_load_from_disc(full, err, sizeof err)) { FindClose(h); return 1; }
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-    return 0;
+    char path[MAX_PATH], err[256];
+    return disc_find_in_folder(folder, path, sizeof path) && stars_load_from_disc(path, err, sizeof err);
 }
 
 /* Draw star `id` (1..10) scaled to w x h over background `bg`, pixel-sharp. */
