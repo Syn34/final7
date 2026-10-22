@@ -1475,8 +1475,6 @@ static void paint_main(HWND h)
     SelectObject(dc, open_);
     SelectObject(dc, obr);
     DeleteObject(db);
-    RECT sr = { tx + S(18), S(12), W - S(560), S(34) };
-    text_rect(dc, sr, g_status, f_ui, C_TEXT, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
@@ -1921,11 +1919,14 @@ static void layout(void)
     GetClientRect(g_main, &rc);
     int W = rc.right, H = rc.bottom;
     /* top-right controls */
-    int x = W - S(14), y = S(10), bh = S(28);
-    x -= S(96);
-    place(g_btn[ID_MENU - 100], x, y, S(96), bh);
-    x -= S(6) + S(250);
+    /* emulator list + Menu, right after the title and status dot */
+    int y = S(10), bh = S(28);
+    HDC tdc = GetDC(g_main);
+    int x = S(16) + text_w(tdc, APP_NAME, f_title) + S(18) + S(11) + S(12);
+    ReleaseDC(g_main, tdc);
     place(g_emu_combo, x, y + S(1), S(250), S(300));
+    x += S(250) + S(6);
+    place(g_btn[ID_MENU - 100], x, y, S(96), bh);
     for (int i = 0; i < N_PAGES; i++) place(g_btn[ID_TAB0 - 100 + i], S(12) + i * S(128), S(HEADER_H), S(124), S(32));
 
     int py = S(HEADER_H + 34), pw = W - S(20), ph = H - py - S(10);
