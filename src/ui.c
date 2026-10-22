@@ -1786,8 +1786,8 @@ static void layout(void)
         place(g_lists[L_PW].hwnd, S(12), S(70), W - S(24), H - S(82));
     }
     for (int i = 0; i < N_LISTS; i++) vlist_fit(&g_lists[i]);
-    for (int i = 0; i < N_PAGES; i++) InvalidateRect(g_pages[i], NULL, TRUE);
-    InvalidateRect(g_main, NULL, FALSE);
+    /* everything moved: repaint pages and every panel in full */
+    RedrawWindow(g_main, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 static void vlist_fit(VList *v)
@@ -2303,6 +2303,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     br_panel2 = CreateSolidBrush(C_PANEL2);
 
     WNDCLASSEX wc = { sizeof wc };
+    wc.style = CS_HREDRAW | CS_VREDRAW;   /* repaint whole panels on resize (no stale smears) */
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hIcon = LoadIcon(inst, MAKEINTRESOURCE(1));
