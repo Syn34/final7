@@ -30,8 +30,8 @@
 #define C_GREEN  RGB(0x5f, 0xcf, 0x86)
 #define C_RED    RGB(0xef, 0x6b, 0x6b)
 #define C_BLUE   RGB(0x6f, 0xa8, 0xff)
-#define C_POW    RGB(0xff, 0x9a, 0x52)
-#define C_TEC    RGB(0x7f, 0xc8, 0xff)
+#define C_POW    RGB(0xff, 0x4d, 0x4d)   /* POW is always red  */
+#define C_TEC    RGB(0x6f, 0xb4, 0xff)   /* TEC is always blue */
 #define C_UPBG   RGB(0x1e, 0x46, 0x30)
 #define C_DOWNBG RGB(0x4a, 0x20, 0x26)
 #define C_CURBG  RGB(0x3a, 0x32, 0x20)
@@ -39,11 +39,9 @@
 static COLORREF letter_color(char c)
 {
     switch (c) {
-    case 'S': return RGB(0xff, 0xd8, 0x5a);
-    case 'A': return RGB(0xff, 0x9f, 0x43);
-    case 'B': return RGB(0x7b, 0xd3, 0x89);
-    case 'C': return RGB(0x74, 0xb9, 0xff);
-    default:  return RGB(0xa4, 0xa9, 0xb8);
+    case 'S': return RGB(0xb4, 0x6e, 0xff);   /* purple */
+    case 'A': return C_POW;                   /* red    */
+    default:  return C_TEC;                   /* B, C, D: blue */
     }
 }
 
@@ -1243,6 +1241,22 @@ static int text_w(HDC dc, const char *s, HFONT f)
     return sz.cx;
 }
 
+/* "S-POW": letter coloured by grade, POW red / TEC blue */
+static void draw_rank_label(HDC dc, RECT r, int score, HFONT f)
+{
+    char letter, l[2] = { 0, 0 };
+    int pow;
+    rank_label(score, &letter, &pow, NULL);
+    l[0] = letter;
+    const char *style = pow ? "POW" : "TEC";
+    int x = r.left;
+    text_rect(dc, (RECT){ x, r.top, r.right, r.bottom }, l, f, letter_color(letter), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    x += text_w(dc, l, f);
+    text_rect(dc, (RECT){ x, r.top, r.right, r.bottom }, "-", f, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    x += text_w(dc, "-", f);
+    text_rect(dc, (RECT){ x, r.top, r.right, r.bottom }, style, f, pow ? C_POW : C_TEC, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+}
+
 /* ---- main window header ---------------------------------------------------------------- */
 static void paint_main(HWND h)
 {
@@ -1338,7 +1352,7 @@ static void paint_sumcard(HWND h)
         text_at(dc, x, y, line, f_bold, C_GOLD);
         y += S(26);
         RECT lr = { x, y, x + S(150), y + S(60) };
-        text_rect(dc, lr, lab, f_big, letter_color(letter), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        draw_rank_label(dc, lr, g_rank_score, f_big);
         double p = chance_for(g_tr.opponent, 1, note, sizeof note);
         snprintf(pct, sizeof pct, "%.0f%%", p * 100);
         RECT pr = { W / 2, y, W - x, y + S(60) };
@@ -1479,7 +1493,7 @@ static void paint_overlay(HWND h)
         double p = chance_for(g_tr.opponent, 1, NULL, 0);
         snprintf(pct, sizeof pct, "%.0f%%", p * 100);
         RECT a = { S(10), S(4), W / 2 + S(20), H - S(26) };
-        text_rect(dc, a, lab, f_big, letter_color(letter), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        draw_rank_label(dc, a, g_rank_score, f_big);
         RECT b = { W / 2, S(4), W - S(10), H - S(26) };
         text_rect(dc, b, pct, f_big, p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         snprintf(info, sizeof info, "score %d  |  %s  |  LP %d / %d", g_rank_score, duelist_name(g_tr.opponent),
