@@ -188,6 +188,14 @@ int stars_save(const char *path)
     return 1;
 }
 
+int stars_load_mem(const void *data, uint32_t len)
+{
+    if (len < 4 + sizeof g_icons || memcmp(data, "FMS1", 4)) return 0;
+    memcpy(g_icons, (const uint8_t *)data + 4, sizeof g_icons);
+    g_have = 1;
+    return 1;
+}
+
 int stars_load(const char *path)
 {
     FILE *f = fopen(path, "rb");

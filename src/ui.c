@@ -945,6 +945,29 @@ static int load_pools_from_disc(const char *path)
     return got;
 }
 
+/* Every duelist's deck and drop pools ship inside final7.exe (RCDATA 3, read from the
+ * Forbidden Memories (USA) disc), so the Drops tab and Beat Final 7 work without a disc. */
+static const void *resource_bytes(int id, DWORD *len)
+{
+    HRSRC r = FindResource(NULL, MAKEINTRESOURCE(id), RT_RCDATA);
+    HGLOBAL h = r ? LoadResource(NULL, r) : NULL;
+    *len = r ? SizeofResource(NULL, r) : 0;
+    return h ? LockResource(h) : NULL;
+}
+
+static void load_builtin_pools(void)
+{
+    DWORD len;
+    const uint8_t *p = resource_bytes(3, &len);
+    if (!p || len != 4 + (DWORD)N_DUELISTS * 4 * N_CARDS * 2 || memcmp(p, "FMD1", 4)) return;
+    for (int d = 1; d <= N_DUELISTS; d++) {
+        if (g_have_pool[d] == 2) continue;
+        memcpy(g_pools[d], p + 4 + (size_t)(d - 1) * 4 * N_CARDS * 2, 4 * N_CARDS * 2);
+        g_have_pool[d] = 2;
+    }
+    g_pool_gen++;
+}
+
 static int all_pools(void)   /* every duelist read from the disc */
 {
     for (int d = 1; d <= N_DUELISTS; d++) if (g_have_pool[d] != 2) return 0;
@@ -2467,12 +2490,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     load_tracked();
     load_history();
     load_pools();
+    load_builtin_pools();
     load_favs();
     art_init();
     {
         char cache[MAX_PATH], exedir[MAX_PATH];
         data_path(cache, "star_icons.bin");
         int have_stars = stars_load(cache);
+        if (!have_stars) {
+            DWORD len;
+            const void *p = resource_bytes(4, &len);
+            have_stars = p && stars_load_mem(p, len);
+        }
         if (!have_stars || !all_pools()) {
             GetModuleFileName(NULL, exedir, MAX_PATH);
             char *sl = strrchr(exedir, '\\');

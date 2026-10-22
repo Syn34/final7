@@ -23,7 +23,7 @@ It's a single Windows program written in C. **Download [`final7.exe`](final7.exe
 
 If the emulator runs as administrator, run final7 as administrator too. To look around without the game, choose **Demo** from the Menu (or start it with `final7.exe --demo`). It simulates a game playing endless duels.
 
-The guardian star icons and every duelist's deck and drop pools are read from your Forbidden Memories disc image: final7 looks for a `.bin`/`.iso` in its own folder on startup, or use **Menu → Load data from game disc...**. Your tracked items, favorites, duel history and learned duelist tables are saved in a `final7_data` folder next to the exe.
+Every duelist's deck and drop pools and the guardian star icons come built into final7.exe (read from a Forbidden Memories (USA) disc), so the Drops tab and Beat Final 7 work out of the box. final7 can still re-read them from your own disc image: final7 looks for a `.bin`/`.iso` in its own folder on startup, or use **Menu → Load data from game disc...**. Your tracked items, favorites, duel history and learned duelist tables are saved in a `final7_data` folder next to the exe.
 
 ### Supported emulators
 | Emulator | How the PS1 memory is found |

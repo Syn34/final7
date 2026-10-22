@@ -3,6 +3,8 @@
 1 ICON "app.ico"
 1 RT_MANIFEST "app.manifest"
 2 RCDATA "art.bin"
+3 RCDATA "pools.bin"
+4 RCDATA "star_icons.bin"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION 2,0,0,0

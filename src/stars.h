@@ -17,6 +17,7 @@ int  stars_autoload(const char *folder);
 int  stars_have(void);
 int  stars_save(const char *path);
 int  stars_load(const char *path);
+int  stars_load_mem(const void *data, uint32_t len);   /* the copy built into final7.exe */
 void stars_draw(HDC dc, int id, int x, int y, int w, int h, COLORREF bg);
 
 #endif
