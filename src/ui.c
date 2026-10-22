@@ -113,8 +113,11 @@ static uint16_t g_pend_w, g_pend_l, g_pend_drops[10];
 static int g_pend_ndrops;
 
 static uint16_t (*g_pools)[4][N_CARDS];   /* [duelist 1..39][deck, sapow, bcd, satec] */
-static uint8_t g_have_pool[N_DUELISTS + 1];
+static uint8_t g_have_pool[N_DUELISTS + 1];   /* 0 none, 1 learned during a duel, 2 read from the disc */
+static int g_pool_gen;                         /* bumps when pools change */
 
+static char g_set_disc[MAX_PATH];   /* last disc image used */
+static int g_askdisc = 1;
 static int g_assume_win = 1, g_pw_unowned, g_pw_afford, g_pw_favonly;
 static uint8_t g_fav[N_CARDS + 1];
 static int g_favs[N_CARDS], g_nfavs;
@@ -271,7 +274,7 @@ static void save_pools(void)
     data_path(p, "duelist_tables.bin");
     FILE *f = fopen(p, "wb");
     if (!f) return;
-    fwrite("FMP1", 1, 4, f);
+    fwrite("FMP2", 1, 4, f);
     fwrite(g_have_pool, 1, sizeof g_have_pool, f);
     fwrite(g_pools, sizeof g_pools[0], N_DUELISTS + 1, f);
     fclose(f);
@@ -283,7 +286,7 @@ static void load_pools(void)
     data_path(p, "duelist_tables.bin");
     FILE *f = fopen(p, "rb");
     if (!f) return;
-    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "FMP1", 4) &&
+    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "FMP2", 4) &&
         fread(g_have_pool, 1, sizeof g_have_pool, f) == sizeof g_have_pool &&
         fread(g_pools, sizeof g_pools[0], N_DUELISTS + 1, f) == N_DUELISTS + 1) {
         fclose(f);
@@ -302,8 +305,8 @@ static void save_settings(void)
     WINDOWPLACEMENT wp = { sizeof wp };
     GetWindowPlacement(g_main, &wp);
     RECT r = wp.rcNormalPosition;
-    fprintf(f, "assume_win=%d\nx=%ld\ny=%ld\nw=%ld\nh=%ld\nmax=%d\n", g_assume_win, r.left, r.top,
-            r.right - r.left, r.bottom - r.top, wp.showCmd == SW_SHOWMAXIMIZED);
+    fprintf(f, "assume_win=%d\nx=%ld\ny=%ld\nw=%ld\nh=%ld\nmax=%d\naskdisc=%d\ndisc=%s\n", g_assume_win, r.left, r.top,
+            r.right - r.left, r.bottom - r.top, wp.showCmd == SW_SHOWMAXIMIZED, g_askdisc, g_set_disc);
     fclose(f);
 }
 
@@ -311,7 +314,7 @@ static int g_set_x = CW_USEDEFAULT, g_set_y = CW_USEDEFAULT, g_set_w, g_set_h, g
 
 static void load_settings(void)
 {
-    char p[MAX_PATH], line[128];
+    char p[MAX_PATH], line[MAX_PATH + 16];
     data_path(p, "settings.ini");
     FILE *f = fopen(p, "r");
     if (!f) return;
@@ -323,6 +326,11 @@ static void load_settings(void)
         else if (sscanf(line, "w=%d", &v) == 1) g_set_w = v;
         else if (sscanf(line, "h=%d", &v) == 1) g_set_h = v;
         else if (sscanf(line, "max=%d", &v) == 1) g_set_max = v;
+        else if (sscanf(line, "askdisc=%d", &v) == 1) g_askdisc = v;
+        else if (!strncmp(line, "disc=", 5)) {
+            snprintf(g_set_disc, sizeof g_set_disc, "%s", line + 5);
+            g_set_disc[strcspn(g_set_disc, "\r\n")] = 0;
+        }
     }
     fclose(f);
 }
@@ -850,7 +858,6 @@ static uint16_t g_sim_pools[N_DUELISTS + 1][N_CARDS];
 static uint8_t g_sim_have[N_DUELISTS + 1];
 static double g_sim_out[N_DUELISTS + 1];
 static uint32_t g_sim_out_key;
-static int g_pool_gen;                     /* bumps when pools are added */
 
 static uint32_t sim_key_now(void)
 {
@@ -931,16 +938,16 @@ static int load_pools_from_disc(const char *path)
         }
         if (!ok) continue;
         memcpy(g_pools[d], arr, sizeof arr);
-        g_have_pool[d] = 1;
+        g_have_pool[d] = 2;
         got++;
     }
     if (got) { save_pools(); g_pool_gen++; }
     return got;
 }
 
-static int all_pools(void)
+static int all_pools(void)   /* every duelist read from the disc */
 {
-    for (int d = 1; d <= N_DUELISTS; d++) if (!g_have_pool[d]) return 0;
+    for (int d = 1; d <= N_DUELISTS; d++) if (g_have_pool[d] != 2) return 0;
     return 1;
 }
 
@@ -1026,14 +1033,26 @@ static void follow_pending(void)
 
 static void cache_pools(void)
 {
+    /* Learn the opponent's pools from RAM only when the disc has not supplied them, the duel
+     * is well under way (the game has certainly loaded this opponent's record by turn 2), and
+     * the data is not simply another duelist's pools still sitting in memory. A pool learned
+     * earlier is corrected if the live one differs. */
     int d = g_snap.opponent;
-    if (d < 1 || d > N_DUELISTS || g_have_pool[d] || !g_snap.pools_valid) return;
-    InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
-    memcpy(g_pools[d][0], g_snap.deck_pool, sizeof g_pools[d][0]);
-    for (int t = 0; t < 3; t++) memcpy(g_pools[d][t + 1], g_snap.drop_pool[t], sizeof g_pools[d][0]);
+    if (d < 1 || d > N_DUELISTS || g_have_pool[d] == 2 || !g_snap.pools_valid) return;
+    if (!duel_active() || g_tr.opponent != d || g_snap.you.counters[0] < 2) return;
+    uint16_t now[4][N_CARDS];
+    memcpy(now[0], g_snap.deck_pool, sizeof now[0]);
+    for (int t = 0; t < 3; t++) memcpy(now[t + 1], g_snap.drop_pool[t], sizeof now[0]);
+    if (g_have_pool[d] && !memcmp(g_pools[d], now, sizeof now)) return;   /* already right */
+    for (int o = 1; o <= N_DUELISTS; o++)
+        if (o != d && g_have_pool[o] && !memcmp(g_pools[o], now, sizeof now)) return;   /* stale copy */
+    int had = g_have_pool[d];
+    memcpy(g_pools[d], now, sizeof now);
     g_have_pool[d] = 1;
     save_pools();
-    logf_("Learned %s's deck and drop tables.", duelist_name(d));
+    g_pool_gen++;
+    InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
+    logf_("%s %s's deck and drop tables.", had ? "Corrected" : "Learned", duelist_name(d));
     if (g_detail_duelist == d) fill_detail();
 }
 
@@ -2075,6 +2094,8 @@ static void load_from_disc(const char *file, int quiet)
     int pools = load_pools_from_disc(file);
     if (stars || pools) {
         snprintf(g_disc, sizeof g_disc, "%s", file);
+        snprintf(g_set_disc, sizeof g_set_disc, "%s", file);
+        save_settings();
         logf_("Read %s from %s", pools ? "star icons and every duelist's deck/drop pools" : "star icons", file);
         InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
         if (g_detail_duelist) fill_detail();
@@ -2338,6 +2359,16 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         return on_list_notify((NMHDR *)l);
     case WM_TIMER:
         if (w == TIMER_POLL) on_tick();
+        else if (w == 3) {
+            KillTimer(h, 3);
+            int r = MessageBox(h, "final7 reads every duelist's deck pool and drop tables (and the guardian star icons) "
+                               "from your Yu-Gi-Oh! Forbidden Memories disc image (.bin / .iso).\n\n"
+                               "It didn't find one next to final7.exe. Choose it now?\n\n"
+                               "(Without it, pools are only learned while you duel, and Beat Final 7 can't be worked out.)",
+                               APP_NAME, MB_YESNO | MB_ICONQUESTION);
+            if (r == IDYES) pick_star_disc();
+            else { g_askdisc = 0; save_settings(); }
+        }
         else if (w == 2) {
             KillTimer(h, 2);
             refresh_emus();
@@ -2447,10 +2478,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
             char *sl = strrchr(exedir, '\\');
             if (sl) *sl = 0;
             char disc[MAX_PATH], err[256];
-            if (disc_find_in_folder(exedir, disc, sizeof disc)) {
+            uint32_t probe;
+            int found = g_set_disc[0] && disc_read_wa(g_set_disc, 0, &probe, 4);
+            if (found) snprintf(disc, sizeof disc, "%s", g_set_disc);
+            else found = disc_find_in_folder(exedir, disc, sizeof disc);
+            if (found) {
                 snprintf(g_disc, sizeof g_disc, "%s", disc);
                 if (!have_stars && stars_load_from_disc(disc, err, sizeof err)) stars_save(cache);
                 if (!all_pools()) load_pools_from_disc(disc);
+                snprintf(g_set_disc, sizeof g_set_disc, "%s", disc);
             }
         }
     }
@@ -2522,6 +2558,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     if (cmd && strstr(cmd, "--page=")) show_page(atoi(strstr(cmd, "--page=") + 7) % N_PAGES);
     if (cmd && strstr(cmd, "--demo")) start_demo();
     else SetTimer(h, 2, 600, NULL);
+    if (!all_pools() && g_askdisc && !(cmd && strstr(cmd, "--demo"))) SetTimer(h, 3, 900, NULL);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0) > 0) {
