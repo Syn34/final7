@@ -1490,64 +1490,17 @@ static const Star RING_B[6] = { { "Mars", RGB(0xff, 0x5a, 0x4a), STAR_MARS }, { 
                                 { "Saturn", RGB(0xd8, 0xc0, 0x84), STAR_SATURN }, { "Uranus", RGB(0x6f, 0xe0, 0xf0), STAR_URANUS },
                                 { "Pluto", RGB(0xb4, 0x6e, 0xff), STAR_PLUTO }, { "Neptune", RGB(0x5a, 0x8c, 0xff), STAR_NEPTUNE } };
 
-static void arrow(HDC dc, double x0, double y0, double x1, double y1, double shrink, COLORREF col)
+/* a star's name with its icon in front (when the disc's icons are loaded) */
+static void star_cell(HDC dc, const Star *st, int x, int y, int w, int h)
 {
-    double dx = x1 - x0, dy = y1 - y0, len = sqrt(dx * dx + dy * dy);
-    if (len < 1) return;
-    dx /= len; dy /= len;
-    x0 += dx * shrink; y0 += dy * shrink;
-    x1 -= dx * shrink; y1 -= dy * shrink;
-    HPEN pen = CreatePen(PS_SOLID, S(2), col);
-    HBRUSH br = CreateSolidBrush(col);
-    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
-    MoveToEx(dc, (int)x0, (int)y0, NULL);
-    LineTo(dc, (int)x1, (int)y1);
-    double hl = S(9), hw = S(5);
-    POINT tri[3] = { { (int)x1, (int)y1 },
-                     { (int)(x1 - dx * hl + dy * hw), (int)(y1 - dy * hl - dx * hw) },
-                     { (int)(x1 - dx * hl - dy * hw), (int)(y1 - dy * hl + dx * hw) } };
-    Polygon(dc, tri, 3);
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    DeleteObject(pen);
-    DeleteObject(br);
-}
-
-static void draw_ring(HDC dc, const Star *st, int n, int cx, int cy, int rad)
-{
-    double px[6], py[6];
-    for (int i = 0; i < n; i++) {
-        double a = -1.5707963 + i * 6.2831853 / n;   /* start at the top, clockwise */
-        px[i] = cx + rad * cos(a);
-        py[i] = cy + rad * sin(a);
+    int tx = x;
+    if (stars_have()) {
+        int sz = h - S(4) >= 32 ? 32 : 16;
+        stars_draw(dc, st->id, x, y + (h - sz) / 2, sz, sz, C_PANEL2);
+        tx += sz + S(6);
     }
-    int nr = S(26);
-    if (stars_have()) {   /* the game's own icons, pixel-sharp (whole multiples of 16), name underneath */
-        int sz = rad / 2 / 16 * 16;
-        if (sz > 64) sz = 64;
-        if (sz < 32) sz = 32;
-        for (int i = 0; i < n; i++) arrow(dc, px[i], py[i], px[(i + 1) % n], py[(i + 1) % n], sz / 2 + S(10), C_MUTED);
-        for (int i = 0; i < n; i++) {
-            int ix = (int)px[i] - sz / 2, iy = (int)py[i] - sz / 2 - S(6);
-            stars_draw(dc, st[i].id, ix, iy, sz, sz, C_PANEL2);
-            RECT t = { (int)px[i] - S(40), iy + sz + S(1), (int)px[i] + S(40), iy + sz + S(15) };
-            text_rect(dc, t, st[i].name, f_smallb, st[i].col, DT_CENTER | DT_TOP | DT_SINGLELINE);
-        }
-        return;
-    }
-    for (int i = 0; i < n; i++) arrow(dc, px[i], py[i], px[(i + 1) % n], py[(i + 1) % n], nr + S(3), C_MUTED);
-    for (int i = 0; i < n; i++) {
-        HBRUSH b = CreateSolidBrush(C_PANEL2);
-        HPEN p = CreatePen(PS_SOLID, S(2), st[i].col);
-        HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, p);
-        Ellipse(dc, (int)px[i] - nr, (int)py[i] - nr, (int)px[i] + nr, (int)py[i] + nr);
-        SelectObject(dc, ob);
-        SelectObject(dc, op);
-        DeleteObject(b);
-        DeleteObject(p);
-        RECT t = { (int)px[i] - nr, (int)py[i] - nr, (int)px[i] + nr, (int)py[i] + nr };
-        text_rect(dc, t, st[i].name, f_smallb, st[i].col, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
+    RECT r = { tx, y, x + w, y + h };
+    text_rect(dc, r, st->name, f_bold, st->col, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 static void paint_stars(HWND h)
@@ -1562,17 +1515,31 @@ static void paint_stars(HWND h)
     HGDIOBJ ob = SelectObject(dc, bm);
     fill(dc, 0, 0, W, H, C_PANEL2);
     frame(dc, rc, C_LINE);
-    int legend = S(26);
-    int ch = H - legend;
-    int rad = ch / 2 - S(46);
-    if (rad > W / 4 - S(40)) rad = W / 4 - S(40);
-    if (rad < S(30)) rad = S(30);
-    draw_ring(dc, RING_A, 4, W / 4, ch / 2, rad);
-    draw_ring(dc, RING_B, 6, W * 3 / 4, ch / 2, rad);
-    RECT lr = { S(10), H - legend, W - S(10), H - S(6) };
-    text_rect(dc, lr, stars_have() ? "Arrow points at the star it beats: the winner gets +500 ATK/DEF in battle."
-                                   : "Arrow points at the star it beats (+500).  Menu > Load star icons from game disc for the game's icons.",
-              f_small, C_MUTED, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    /* list: star | beats (+500) | loses to (-500), in the game's two cycles */
+    const Star *order[10];
+    for (int k = 0; k < 4; k++) order[k] = &RING_A[k];
+    for (int k = 0; k < 6; k++) order[4 + k] = &RING_B[k];
+    int pad = S(10), hh = S(24);
+    int rh = (H - hh - S(8)) / 10;
+    if (rh > S(36)) rh = S(36);
+    if (rh < S(16)) rh = S(16);
+    int cw = (W - 2 * pad) / 3;
+    const char *heads[3] = { "Star", "Beats  (+500)", "Loses to  (-500)" };
+    for (int c = 0; c < 3; c++) {
+        RECT hr = { pad + c * cw, 0, pad + (c + 1) * cw, hh };
+        text_rect(dc, hr, heads[c], f_smallb, C_GOLD, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+    fill(dc, pad, hh, W - 2 * pad, 1, C_LINE);
+    for (int k = 0; k < 10; k++) {
+        int y = hh + S(4) + k * rh;
+        if (y + rh > H) break;
+        if (k == 4) fill(dc, pad, y - 1, W - 2 * pad, 1, C_LINE);   /* between the two cycles */
+        int ring = k < 4 ? 0 : 1, n = ring ? 6 : 4, pos = ring ? k - 4 : k;
+        const Star *base = ring ? RING_B : RING_A;
+        star_cell(dc, order[k], pad, y, cw, rh);
+        star_cell(dc, &base[(pos + 1) % n], pad + cw, y, cw, rh);
+        star_cell(dc, &base[(pos + n - 1) % n], pad + 2 * cw, y, cw, rh);
+    }
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
@@ -1700,7 +1667,7 @@ static void layout(void)
         ptext(PG_SUMMARY, fx, fy, fw, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_SUMMARY, fx + fw / 2, fy + S(2), fw - fw / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26));
-        ptext(PG_SUMMARY, fx, S(10), fw, S(22), "Guardian star chart", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, fx, S(10), fw, S(22), "Guardian stars", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_stars, fx, S(36), fw, fy - S(36) - S(16));
     }
     /* cards page */
