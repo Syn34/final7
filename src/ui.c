@@ -136,7 +136,7 @@ static int g_detail_duelist;
 
 /* texts painted on pages */
 static char t_tracked_sum[96], t_last_drops[512], t_pw_count[96], t_detail_title[64], t_fav_sum[96],
-            t_detail_note[200];
+            t_detail_note[360];
 
 #define S(x) MulDiv((x), g_dpi, 96)
 #define HEADER_H 48   /* title bar height, tabs sit below it */
@@ -518,12 +518,65 @@ static void owned_str(int id, char *b, int n)
     else b[0] = 0;
 }
 
+/* Chance the selected CPU can play each card on its first turn: the card is in its
+ * opening 5 cards, or it can be fused from them (any order, chains included).
+ * The CPU's 40 cards are drawn from its deck pool, so its opening hand is 5
+ * independent draws from those weights. Worked out over many sample hands. */
+#define TURN1_HANDS 20000
+static float g_turn1[N_CARDS + 1];
+static int g_turn1_duelist = -1, g_turn1_gen = -1;
+
+static void turn1_walk(const uint16_t *hand, int cur, int used, uint32_t *seen, uint32_t stamp)
+{
+    if (cur < 1 || cur > N_CARDS) return;
+    seen[cur] = stamp;
+    for (int j = 0; j < 5; j++) {
+        if (used & (1 << j)) continue;
+        int r = sim_fuse(cur, hand[j]);
+        if (r) turn1_walk(hand, r, used | (1 << j), seen, stamp);
+    }
+}
+
+static void compute_turn1(int d)
+{
+    if (d == g_turn1_duelist && g_turn1_gen == g_pool_gen) return;
+    g_turn1_duelist = d;
+    g_turn1_gen = g_pool_gen;
+    memset(g_turn1, 0, sizeof g_turn1);
+    if (d < 1 || d > N_DUELISTS || !g_have_pool[d]) return;
+    const uint16_t *pool = g_pools[d][0];
+    static uint32_t cum[N_CARDS], seen[N_CARDS + 1], hits[N_CARDS + 1];
+    uint32_t total = 0;
+    for (int i = 0; i < N_CARDS; i++) cum[i] = total += pool[i];
+    if (!total) return;
+    memset(seen, 0, sizeof seen);
+    memset(hits, 0, sizeof hits);
+    uint32_t rs = 0x2545F491u ^ (uint32_t)d * 2654435761u;
+    for (uint32_t h = 1; h <= TURN1_HANDS; h++) {
+        uint16_t hand[5];
+        for (int k = 0; k < 5; k++) {
+            rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5;
+            uint32_t r = rs % total;
+            int lo = 0, hi = N_CARDS - 1;
+            while (lo < hi) { int m = (lo + hi) / 2; if (cum[m] > r) hi = m; else lo = m + 1; }
+            hand[k] = (uint16_t)(lo + 1);
+        }
+        for (int k = 0; k < 5; k++) turn1_walk(hand, hand[k], 1 << k, seen, h);
+        for (int id = 1; id <= N_CARDS; id++) if (seen[id] == h) hits[id]++;
+    }
+    for (int id = 1; id <= N_CARDS; id++) g_turn1[id] = hits[id] * 100.0f / TURN1_HANDS;
+}
+
 static void pool_text(const uint16_t *pool, int id, int col, char *b, int n)
 {
     switch (col) {
     case 0: snprintf(b, n, "%s", card_name(id)); break;
     case 1: snprintf(b, n, "%.1f%%", pool ? pool[id - 1] * 100.0 / 2048 : 0.0); break;
-    default: owned_str(id, b, n); break;
+    default:
+        if (g_turn1[id] <= 0) snprintf(b, n, "0%%");
+        else if (g_turn1[id] < 0.1f) snprintf(b, n, "<0.1%%");
+        else snprintf(b, n, "%.1f%%", g_turn1[id]);
+        break;
     }
 }
 static COLORREF pool_color(int id)
@@ -665,9 +718,7 @@ static void t_dropduel(int d, int col, char *b, int n)
 {
     switch (col) {
     case 0: snprintf(b, n, "%d", d); break;
-    case 1: snprintf(b, n, "%s", DUELISTS[d - 1]); break;
-    case 2: snprintf(b, n, "%s", g_have_pool[d] ? "yes" : "-"); break;
-    default: if (g_simok[d]) snprintf(b, n, "%.0f%%", g_simwin[d] * 100); else b[0] = 0; break;
+    default: snprintf(b, n, "%s", DUELISTS[d - 1]); break;
     }
 }
 static COLORREF c_dropduel(int d, COLORREF *bg)
@@ -791,8 +842,11 @@ static void fill_detail(void)
                  "and drop tables are learned automatically.");
     } else {
         g_detail_pool = tier == 3 ? g_pools[d][0] : g_pools[d][tier + 1];
-        snprintf(t_detail_note, sizeof t_detail_note, "%s", tier == 3 ? "Chance of each card in the CPU's deck draw." :
-                 "Gold = a card you don't own yet.");
+        compute_turn1(d);
+        snprintf(t_detail_note, sizeof t_detail_note, "%s Turn 1 = chance %s can play the card on their first turn "
+                 "(in their opening 5 cards or fused from them). Gold = a card you don't own yet.",
+                 tier == 3 ? "Chance = each card's odds in the CPU's deck draw." : "Chance = the drop odds.",
+                 DUELISTS[d - 1]);
         if (duel_active() && g_tr.opponent == d) {
             char lab[8];
             rank_label(g_rank_score, NULL, NULL, lab);
@@ -1955,13 +2009,13 @@ static void layout(void)
     }
     /* drops page */
     {
-        int lw = S(320), x2 = S(12) + lw + S(14), w2 = W - x2 - S(12);
+        int lw = S(230), x2 = S(12) + lw + S(14), w2 = W - x2 - S(12);
         ptext(PG_DROPS, S(12), S(10), lw, S(22), "Duelists", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_lists[L_DROPDUEL].hwnd, S(12), S(38), lw, H - S(38) - S(12));
         ptext(PG_DROPS, x2, S(10), w2, S(22), NULL, t_detail_title, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_tier_combo, x2, S(38), S(190), S(200));
-        place(g_lists[L_DETAIL].hwnd, x2, S(74), w2, H - S(74) - S(52));
-        ptext(PG_DROPS, x2, H - S(46), w2, S(42), NULL, t_detail_note, &f_small, C_MUTED, DT_WORDBREAK);
+        place(g_lists[L_DETAIL].hwnd, x2, S(74), w2, H - S(74) - S(66));
+        ptext(PG_DROPS, x2, H - S(60), w2, S(56), NULL, t_detail_note, &f_small, C_MUTED, DT_WORDBREAK);
     }
     /* passwords page */
     {
@@ -2267,8 +2321,8 @@ static void create_children(void)
     SetWindowTheme(g_emu_combo, L"DarkMode_CFD", NULL);
     mkbutton(g_main, ID_MENU, "Menu");
 
-    static const char *const pool_cols[] = { "Card", "Chance", "Owned" };
-    static const int pool_w[] = { 200, 70, 64 };
+    static const char *const pool_cols[] = { "Card", "Chance", "Turn 1" };
+    static const int pool_w[] = { 200, 70, 70 };
     /* summary page */
     HWND p = g_pages[PG_SUMMARY];
     g_sumcard = CreateWindow("FMSum", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
@@ -2312,9 +2366,9 @@ static void create_children(void)
 
     /* drops page */
     p = g_pages[PG_DROPS];
-    static const char *const dd_cols[] = { "#", "Duelist", "Tables", "Win %" };
-    static const int dd_w[] = { 36, 150, 56, 60 };
-    vlist_create(&g_lists[L_DROPDUEL], L_DROPDUEL, p, 4, dd_cols, dd_w, "clcc", t_dropduel, c_dropduel);
+    static const char *const dd_cols[] = { "#", "Duelist" };
+    static const int dd_w[] = { 36, 180 };
+    vlist_create(&g_lists[L_DROPDUEL], L_DROPDUEL, p, 2, dd_cols, dd_w, "cl", t_dropduel, c_dropduel);
     vlist_set_rows(&g_lists[L_DROPDUEL], dl, N_DUELISTS);
     g_tier_combo = CreateWindow("COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 0, 0, 10, 10, p,
                                 (HMENU)(INT_PTR)ID_TIER, g_inst, NULL);
