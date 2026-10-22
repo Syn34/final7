@@ -1560,14 +1560,15 @@ typedef struct { const char *recipe; int result; int need; } Fuse;   /* need: AT
 static const Fuse FUSES[N_FUSES] = {
     /* Below `need` the same pair makes that rule's weaker first-tier result instead
      * (cards 425 Thunder Dragon, 272 and 462). */
-    { "Dragon + Plant + Thunder", 613, 1600 },   /* Dragon + Plant = B. Dragon Jungle King (2100), + Thunder */
-    { "Beast + Fairy", 483, 0 },                 /* Garvas */
-    { "Pyro + Winged Beast", 467, 1300 },        /* Crimson Sunbird */
-    { "Spellcaster + Elf", 551, 0 },             /* Dark Elf */
-    { "Spellcaster + Thunder", 458, 1500 },      /* Kaminari Attack */
-    { "Beast + Female", 627, 0 },                /* Nekogal #2 */
-    { "Beast + Pyro", 529, 0 },                  /* Flame Cerebrus */
-    { "Spellcaster + Jar", 401, 0 },             /* Ushi Oni */
+    /* highest result ATK first */
+    { "Dragon + Thunder", 613, 1600 },           /* Twin-headed Thunder Dragon 2800 */
+    { "Pyro + Winged Beast", 467, 1300 },        /* Crimson Sunbird 2300 */
+    { "Spellcaster + Jar", 401, 0 },             /* Ushi Oni 2150 */
+    { "Beast + Pyro", 529, 0 },                  /* Flame Cerebrus 2100 */
+    { "Beast + Fairy", 483, 0 },                 /* Garvas 2000 */
+    { "Spellcaster + Elf", 551, 0 },             /* Dark Elf 2000 */
+    { "Spellcaster + Thunder", 458, 1500 },      /* Kaminari Attack 1900 */
+    { "Beast + Female", 627, 0 },                /* Nekogal #2 1900 */
 };
 
 static void paint_fuses(HWND h)
@@ -1733,7 +1734,7 @@ static void layout(void)
         place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26));
         /* common type fusions: between the stars and the passwords */
         int uh = S(N_FUSES * 24 + 12), uy = fy - S(14) - uh;
-        ptext(PG_SUMMARY, fx, uy - S(26), fw, S(22), "Common type fusions", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, fx, uy - S(26), fw, S(22), "Common fusions", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_fuses, fx, uy, fw, uh);
         ptext(PG_SUMMARY, fx, S(10), fw, S(22), "Guardian stars", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_stars, fx, S(36), fw, uy - S(26) - S(36) - S(10));
