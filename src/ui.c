@@ -1426,7 +1426,7 @@ static void paint_strip(HWND h)
     HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
     HGDIOBJ ob = SelectObject(dc, bm);
     fill(dc, 0, 0, W, H, C_PANEL);
-    int gap = S(8), th = S(96);
+    int gap = 0, th = S(96);   /* pictures touch: no space between them */
     if (g_ntracked && g_ntracked * th + (g_ntracked - 1) * gap > H)   /* shrink to fit the window height */
         th = (H - gap * (g_ntracked - 1)) / g_ntracked;
     int tw = th * 102 / 96;
@@ -1442,8 +1442,6 @@ static void paint_strip(HWND h)
         fill(dc, box.left, box.top, bw, bh, RGB(0, 0, 0));
         frame(dc, box, RGB(0xc8, 0xc8, 0xc8));
         text_rect(dc, box, num, f_count, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        RECT nr = { tw + S(12), y, W, y + th };
-        text_rect(dc, nr, item_name(item), f_ui, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     if (!g_ntracked) {
         RECT r = { 0, 0, W, S(200) };
@@ -1572,17 +1570,15 @@ static void layout(void)
         ptext(PG_SUMMARY, S(12), ch + S(22), lw, S(22), "Rank breakdown", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_lists[L_RANK].hwnd, S(12), ch + S(48), lw, H - ch - S(48) - S(12));
         /* tracked cards: one vertical column */
-        int sw = S(260);
-        ptext(PG_SUMMARY, x2, S(10), sw, S(22), "Tracked cards  (in deck)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        int sw = S(102);
+        ptext(PG_SUMMARY, x2, S(10), S(260), S(22), "Tracked cards  (in deck)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_strip, x2, S(36), sw, H - S(36) - S(12));
         /* favorite passwords: small section, bottom right */
         int fx = x2 + sw + S(16), fw = W - fx - S(12), fh = S(250), fy = H - fh - S(12);
         if (fw < S(200)) fw = S(200);
         ptext(PG_SUMMARY, fx, fy, fw, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_SUMMARY, fx + fw / 2, fy + S(2), fw - fw / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
-        place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26) - S(26));
-        ptext(PG_SUMMARY, fx, H - S(32), fw, S(18), "Favorite them on the Passwords tab. Double-click to copy.", NULL,
-              &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
+        place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26));
     }
     /* cards page */
     {
@@ -1604,9 +1600,7 @@ static void layout(void)
         ptext(PG_CARDS, x3 + w3 / 2, S(12), w3 - w3 / 2, S(22), NULL, t_tracked_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         ptext(PG_CARDS, x3, S(42), w3, S(20), "Counts update live from your deck and trunk.",
               NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
-        place(g_lists[L_TRACK].hwnd, x3, S(74), w3, H - S(74) - S(84));
-        ptext(PG_CARDS, x3, H - S(76), w3, S(22), "Last cards dropped", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        ptext(PG_CARDS, x3, H - S(52), w3, S(46), NULL, t_last_drops, &f_ui, C_TEXT, DT_WORDBREAK | DT_END_ELLIPSIS);
+        place(g_lists[L_TRACK].hwnd, x3, S(74), w3, H - S(74) - S(30));
     }
     /* drops page */
     {
