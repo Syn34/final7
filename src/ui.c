@@ -19,6 +19,8 @@
 
 #include "fm.h"
 #include "art.h"
+#include "stars.h"
+#include <commdlg.h>
 
 /* ---- palette --------------------------------------------------------------- */
 #define C_BG     RGB(0x0e, 0x13, 0x20)
@@ -48,7 +50,7 @@ static COLORREF letter_color(char c)
 
 /* ---- control ids ------------------------------------------------------------ */
 enum {
-    ID_REFRESH = 101, ID_ATTACH, ID_DETACH, ID_DEMO, ID_OVERLAY, ID_MENU,
+    ID_REFRESH = 101, ID_ATTACH, ID_DETACH, ID_DEMO, ID_OVERLAY, ID_MENU, ID_STARDISC,
     ID_TAB0 = 110,
     ID_TRACK = 120, ID_UNTRACK, ID_MOVEUP, ID_MOVEDN, ID_CLEAR, ID_RESETDEF,
     ID_PW_UNOWNED = 130, ID_PW_AFFORD, ID_PW_FAVONLY, ID_PW_FAV,
@@ -1481,12 +1483,12 @@ static LRESULT CALLBACK strip_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 }
 
 /* ---- guardian star chart ---------------------------------------------------------------- */
-typedef struct { const char *name; COLORREF col; } Star;
-static const Star RING_A[4] = { { "Sun", RGB(0xff, 0xc4, 0x3d) }, { "Moon", RGB(0xc9, 0xd1, 0xe0) },
-                                { "Venus", RGB(0xff, 0x8f, 0xc7) }, { "Mercury", RGB(0x4f, 0xd6, 0xc4) } };
-static const Star RING_B[6] = { { "Mars", RGB(0xff, 0x5a, 0x4a) }, { "Jupiter", RGB(0xff, 0xa0, 0x4a) },
-                                { "Saturn", RGB(0xd8, 0xc0, 0x84) }, { "Uranus", RGB(0x6f, 0xe0, 0xf0) },
-                                { "Pluto", RGB(0xb4, 0x6e, 0xff) }, { "Neptune", RGB(0x5a, 0x8c, 0xff) } };
+typedef struct { const char *name; COLORREF col; int id; } Star;
+static const Star RING_A[4] = { { "Sun", RGB(0xff, 0xc4, 0x3d), STAR_SUN }, { "Moon", RGB(0xc9, 0xd1, 0xe0), STAR_MOON },
+                                { "Venus", RGB(0xff, 0x8f, 0xc7), STAR_VENUS }, { "Mercury", RGB(0x4f, 0xd6, 0xc4), STAR_MERCURY } };
+static const Star RING_B[6] = { { "Mars", RGB(0xff, 0x5a, 0x4a), STAR_MARS }, { "Jupiter", RGB(0xff, 0xa0, 0x4a), STAR_JUPITER },
+                                { "Saturn", RGB(0xd8, 0xc0, 0x84), STAR_SATURN }, { "Uranus", RGB(0x6f, 0xe0, 0xf0), STAR_URANUS },
+                                { "Pluto", RGB(0xb4, 0x6e, 0xff), STAR_PLUTO }, { "Neptune", RGB(0x5a, 0x8c, 0xff), STAR_NEPTUNE } };
 
 static void arrow(HDC dc, double x0, double y0, double x1, double y1, double shrink, COLORREF col)
 {
@@ -1520,6 +1522,19 @@ static void draw_ring(HDC dc, const Star *st, int n, int cx, int cy, int rad)
         py[i] = cy + rad * sin(a);
     }
     int nr = S(26);
+    if (stars_have()) {   /* the game's own icons, pixel-sharp (whole multiples of 16), name underneath */
+        int sz = rad / 2 / 16 * 16;
+        if (sz > 64) sz = 64;
+        if (sz < 32) sz = 32;
+        for (int i = 0; i < n; i++) arrow(dc, px[i], py[i], px[(i + 1) % n], py[(i + 1) % n], sz / 2 + S(10), C_MUTED);
+        for (int i = 0; i < n; i++) {
+            int ix = (int)px[i] - sz / 2, iy = (int)py[i] - sz / 2 - S(6);
+            stars_draw(dc, st[i].id, ix, iy, sz, sz, C_PANEL2);
+            RECT t = { (int)px[i] - S(40), iy + sz + S(1), (int)px[i] + S(40), iy + sz + S(15) };
+            text_rect(dc, t, st[i].name, f_smallb, st[i].col, DT_CENTER | DT_TOP | DT_SINGLELINE);
+        }
+        return;
+    }
     for (int i = 0; i < n; i++) arrow(dc, px[i], py[i], px[(i + 1) % n], py[(i + 1) % n], nr + S(3), C_MUTED);
     for (int i = 0; i < n; i++) {
         HBRUSH b = CreateSolidBrush(C_PANEL2);
@@ -1549,14 +1564,15 @@ static void paint_stars(HWND h)
     frame(dc, rc, C_LINE);
     int legend = S(26);
     int ch = H - legend;
-    int rad = ch / 2 - S(34);
-    if (rad > W / 4 - S(34)) rad = W / 4 - S(34);
+    int rad = ch / 2 - S(46);
+    if (rad > W / 4 - S(40)) rad = W / 4 - S(40);
     if (rad < S(30)) rad = S(30);
-    draw_ring(dc, RING_A, 4, W / 4, ch / 2 + S(4), rad);
-    draw_ring(dc, RING_B, 6, W * 3 / 4, ch / 2 + S(4), rad);
+    draw_ring(dc, RING_A, 4, W / 4, ch / 2, rad);
+    draw_ring(dc, RING_B, 6, W * 3 / 4, ch / 2, rad);
     RECT lr = { S(10), H - legend, W - S(10), H - S(6) };
-    text_rect(dc, lr, "Arrow points at the star it beats: the winner gets +500 ATK/DEF in battle.", f_small, C_MUTED,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    text_rect(dc, lr, stars_have() ? "Arrow points at the star it beats: the winner gets +500 ATK/DEF in battle."
+                                   : "Arrow points at the star it beats (+500).  Menu > Load star icons from game disc for the game's icons.",
+              f_small, C_MUTED, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
@@ -1863,6 +1879,30 @@ static void draw_button(DRAWITEMSTRUCT *d)
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
+static void star_cache_path(char *out) { data_path(out, "star_icons.bin"); }
+
+static void pick_star_disc(void)
+{
+    char file[MAX_PATH] = "";
+    OPENFILENAMEA of = { sizeof of };
+    of.hwndOwner = g_main;
+    of.lpstrFilter = "PlayStation disc images (*.bin;*.iso;*.img)\0*.bin;*.iso;*.img\0All files\0*.*\0";
+    of.lpstrFile = file;
+    of.nMaxFile = sizeof file;
+    of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    of.lpstrTitle = "Choose your Yu-Gi-Oh! Forbidden Memories disc image";
+    if (!GetOpenFileNameA(&of)) return;
+    char err[300], cache[MAX_PATH];
+    if (stars_load_from_disc(file, err, sizeof err)) {
+        star_cache_path(cache);
+        stars_save(cache);
+        logf_("Loaded guardian star icons from %s", file);
+        InvalidateRect(g_stars, NULL, FALSE);
+    } else {
+        MessageBox(g_main, err, APP_NAME, MB_ICONWARNING);
+    }
+}
+
 static void show_main_menu(void)
 {
     HMENU m = CreatePopupMenu();
@@ -1872,6 +1912,8 @@ static void show_main_menu(void)
     AppendMenu(m, MF_SEPARATOR, 0, NULL);
     AppendMenu(m, MF_STRING | (g_mode == 2 ? MF_CHECKED : 0), ID_DEMO, "Demo");
     AppendMenu(m, MF_STRING | (g_overlay ? MF_CHECKED : 0), ID_OVERLAY, "Overlay");
+    AppendMenu(m, MF_SEPARATOR, 0, NULL);
+    AppendMenu(m, MF_STRING, ID_STARDISC, "Load star icons from game disc...");
     RECT r;
     GetWindowRect(g_btn[ID_MENU - 100], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom + S(2), 0, g_main, NULL);
@@ -2113,6 +2155,7 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (id >= ID_TAB0 && id < ID_TAB0 + N_PAGES) { show_page(id - ID_TAB0); return 0; }
         switch (id) {
         case ID_MENU: show_main_menu(); break;
+        case ID_STARDISC: pick_star_disc(); break;
         case ID_REFRESH: refresh_emus(); logf_("Found %d emulator process(es).", g_nemus); break;
         case ID_ATTACH: start_attach(0); break;
         case ID_DETACH: detach_all(); logf_("Detached."); break;
@@ -2195,6 +2238,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     load_pools();
     load_favs();
     art_init();
+    {
+        char cache[MAX_PATH], exedir[MAX_PATH];
+        data_path(cache, "star_icons.bin");
+        if (!stars_load(cache)) {
+            GetModuleFileName(NULL, exedir, MAX_PATH);
+            char *sl = strrchr(exedir, '\\');
+            if (sl) *sl = 0;
+            if (stars_autoload(exedir)) stars_save(cache);
+        }
+    }
 
     f_ui = mkfont("Segoe UI", 10, FW_NORMAL);
     f_bold = mkfont("Segoe UI", 10, FW_BOLD);
