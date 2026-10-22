@@ -47,6 +47,13 @@ int main(void)
         weak[7] = 2048;                /* a CPU deck of nothing but Mushroom Man (800 ATK) */
         for (int i = 0; i < 40; i++) deck[i] = (uint16_t)(1 + (i % 3));   /* Blue-eyes, Mystical Elf, Hitotsu-me */
         CHECK(sim_win_rate(deck, weak, 200, 1) > 0.8);
+        uint16_t seven[7][N_CARDS];
+        for (int k = 0; k < 7; k++) memcpy(seven[k], weak, sizeof weak);
+        double st[7];
+        double g = sim_gauntlet(deck, (const uint16_t (*)[722])seven, 7, 400, 1, st);
+        CHECK(g > 0.2 && g <= st[0] + 1e-9);   /* winning all seven is no likelier than winning one */
+        seven[6][7] = 0; seven[6][0] = 2048;    /* Nitemare stand-in: all Blue-eyes */
+        CHECK(sim_gauntlet(deck, (const uint16_t (*)[722])seven, 7, 400, 1, NULL) < g);
     }
     CHECK(card_is_monster(1) && !card_is_monster(330 /* a magic card id in range */) == !card_is_monster(330));
 

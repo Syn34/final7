@@ -202,28 +202,50 @@ static void build_cpu_deck(const uint16_t pool[722], uint16_t out[40])
     }
 }
 
+/* One duel: 1 if `deck` beats a CPU deck built from `pool`. */
+static int sim_duel(const uint16_t deck[40], const uint16_t pool[722], int you_first)
+{
+    Player a, b;
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    memcpy(a.deck, deck, sizeof a.deck);
+    build_cpu_deck(pool, b.deck);
+    shuffle(a.deck, 40);
+    shuffle(b.deck, 40);
+    a.lp = b.lp = START_LP;
+    for (int turn = 0; turn < 200; turn++) {
+        Player *me = ((turn & 1) == 0) == you_first ? &a : &b;
+        Player *opp = me == &a ? &b : &a;
+        if (!draw_up(me)) return me != &a;
+        take_turn(me, opp);
+        if (opp->lp <= 0) return me == &a;
+    }
+    return 0;
+}
+
 double sim_win_rate(const uint16_t deck[40], const uint16_t pool[722], int runs, uint32_t seed)
 {
     rng_state = seed ? seed : 0x1234567u;
     int wins = 0;
-    for (int r = 0; r < runs; r++) {
-        Player a, b;
-        memset(&a, 0, sizeof a);
-        memset(&b, 0, sizeof b);
-        memcpy(a.deck, deck, sizeof a.deck);
-        build_cpu_deck(pool, b.deck);
-        shuffle(a.deck, 40);
-        shuffle(b.deck, 40);
-        a.lp = b.lp = START_LP;
-        int you_first = r & 1, result = 0;
-        for (int turn = 0; turn < 200 && !result; turn++) {
-            Player *me = ((turn & 1) == 0) == you_first ? &a : &b;
-            Player *opp = me == &a ? &b : &a;
-            if (!draw_up(me)) { result = me == &a ? -1 : 1; break; }
-            take_turn(me, opp);
-            if (opp->lp <= 0) result = me == &a ? 1 : -1;
-        }
-        if (result > 0) wins++;
-    }
+    for (int r = 0; r < runs; r++) wins += sim_duel(deck, pool, r & 1);
     return runs ? (double)wins / runs : 0;
+}
+
+double sim_gauntlet(const uint16_t deck[40], const uint16_t (*pools)[722], int n, int runs, uint32_t seed,
+                    double *stage_win)
+{
+    rng_state = seed ? seed : 0x1234567u;
+    int cleared = 0, played[16] = {0}, won[16] = {0};
+    for (int r = 0; r < runs; r++) {
+        int k = 0;
+        for (; k < n; k++) {
+            played[k]++;
+            if (!sim_duel(deck, pools[k], (int)(rng() & 1))) break;
+            won[k]++;
+        }
+        cleared += k == n;
+    }
+    if (stage_win)
+        for (int k = 0; k < n; k++) stage_win[k] = played[k] ? (double)won[k] / played[k] : 0;
+    return runs ? (double)cleared / runs : 0;
 }

@@ -124,8 +124,6 @@ static int g_favs[N_CARDS], g_nfavs;
 static char g_dir[MAX_PATH];
 
 typedef struct { int fw, fl, sw, sl, w, l, best; double chance; } DStat;
-static double g_simwin[N_DUELISTS + 1];    /* simulated first-try win rate per duelist */
-static uint8_t g_simok[N_DUELISTS + 1];
 static DStat g_dstat[N_DUELISTS + 1];
 static uint64_t g_dstat_t;
 
@@ -901,16 +899,19 @@ static double chance_for(int d, int live, char *note, int nlen)
     return p;
 }
 
-/* ---- deck-vs-deck simulation (sim.c) ------------------------------------------------------
- * Your current deck is played against each duelist's deck pool; Beat Final 7 is the
- * chance to win all seven final duels first try: the product of the seven win rates. */
-#define SIM_RUNS 800
-static uint32_t g_sim_key;                 /* deck + pools the results belong to */
+/* ---- Beat Final 7 (sim.c) ---------------------------------------------------------------
+ * Every time your deck changes, it is run through the Final 7 gauntlet many times: Seto 2nd,
+ * Guardian Sebek, Guardian Neku, Heishin 2nd, Seto 3rd, DarkNite and Nitemare in order, one
+ * duel each, with each CPU deck built from that duelist's deck pool. Beat Final 7 is the
+ * share of attempts that win all seven in a row. */
+#define F7_FIRST 32
+#define F7_N 7
+#define F7_RUNS 20000
+static uint32_t g_sim_key;                 /* deck + pools the result belongs to */
 static volatile LONG g_sim_running;
 static uint16_t g_sim_deck[40];
-static uint16_t g_sim_pools[N_DUELISTS + 1][N_CARDS];
-static uint8_t g_sim_have[N_DUELISTS + 1];
-static double g_sim_out[N_DUELISTS + 1];
+static uint16_t g_sim_pools[F7_N][N_CARDS];
+static double g_sim_out, g_f7 = -1;
 static uint32_t g_sim_out_key;
 
 static uint32_t sim_key_now(void)
@@ -923,8 +924,7 @@ static uint32_t sim_key_now(void)
 static DWORD WINAPI sim_thread(LPVOID p)
 {
     uint32_t key = (uint32_t)(uintptr_t)p;
-    for (int d = 1; d <= N_DUELISTS; d++)
-        g_sim_out[d] = g_sim_have[d] ? sim_win_rate(g_sim_deck, g_sim_pools[d], SIM_RUNS, key ^ (uint32_t)(d * 7919)) : -1;
+    g_sim_out = sim_gauntlet(g_sim_deck, (const uint16_t (*)[722])g_sim_pools, F7_N, F7_RUNS, key, NULL);
     g_sim_out_key = key;
     PostMessage(g_main, WM_APP_SIMDONE, 0, 0);
     return 0;
@@ -935,11 +935,9 @@ static void sim_maybe_start(void)
     if (!snap_ok() || g_sim_running) return;
     uint32_t key = sim_key_now();
     if (key == g_sim_key) return;
+    for (int k = 0; k < F7_N; k++) if (!g_have_pool[F7_FIRST + k]) { g_f7 = -1; return; }
     memcpy(g_sim_deck, g_snap.deck, sizeof g_sim_deck);
-    for (int d = 1; d <= N_DUELISTS; d++) {
-        g_sim_have[d] = g_have_pool[d];
-        if (g_have_pool[d]) memcpy(g_sim_pools[d], g_pools[d][0], sizeof g_sim_pools[d]);
-    }
+    for (int k = 0; k < F7_N; k++) memcpy(g_sim_pools[k], g_pools[F7_FIRST + k][0], sizeof g_sim_pools[k]);
     g_sim_running = 1;
     HANDLE th = CreateThread(NULL, 0, sim_thread, (LPVOID)(uintptr_t)key, 0, NULL);
     if (th) CloseHandle(th); else g_sim_running = 0;
@@ -947,27 +945,15 @@ static void sim_maybe_start(void)
 
 static void sim_done(void)
 {
-    for (int d = 1; d <= N_DUELISTS; d++) {
-        g_simok[d] = g_sim_out[d] >= 0;
-        g_simwin[d] = g_sim_out[d];
-    }
+    g_f7 = g_sim_out;
     g_sim_key = g_sim_out_key;
     g_sim_running = 0;
     InvalidateRect(g_sumcard, NULL, FALSE);
-    InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
     sim_maybe_start();   /* the deck may have changed meanwhile */
 }
 
-/* -1 when a Final 7 deck pool is still missing */
-static double final7_chance(void)
-{
-    double p = 1.0;
-    for (int d = 32; d <= 38; d++) {
-        if (!g_simok[d]) return -1;
-        p *= g_simwin[d];
-    }
-    return p;
-}
+/* -1 until a result is ready (or while a Final 7 deck pool is missing) */
+static double final7_chance(void) { return g_f7; }
 
 /* ---- deck pools straight from the disc ------------------------------------------------------
  * WA_MRG.MRG holds one 6144-byte record per duelist at 15308800 + 6144 * id: the deck pool,
@@ -1566,9 +1552,11 @@ static void paint_sumcard(HWND h)
     if (g_mode && snap_ok()) {
         double p = final7_chance();
         if (p >= 0) {
-            if (p > 0 && p < 0.005) snprintf(pct, sizeof pct, "<1%%");
+            if (p > 0 && p < 0.001) snprintf(pct, sizeof pct, "<0.1%%");
+            else if (p < 0.1) snprintf(pct, sizeof pct, "%.1f%%", p * 100);
             else snprintf(pct, sizeof pct, "%.0f%%", p * 100);
             pc = p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED);
+            if (g_sim_running) f7label = "Beat Final 7 (updating...)";
         } else {
             snprintf(pct, sizeof pct, "?");
             f7label = g_sim_running ? "Beat Final 7 (working...)" : "Beat Final 7 (needs disc)";
