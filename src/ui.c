@@ -900,11 +900,11 @@ static double chance_for(int d, int live, char *note, int nlen)
 }
 
 /* ---- Beat Final 7 (sim.c) ---------------------------------------------------------------
- * Every time your deck changes, it is run through the Final 7 gauntlet many times: Seto 2nd,
+ * Every time your deck changes, it is run through the Final 7 gauntlet many times: Labyrinth Mage,
  * Guardian Sebek, Guardian Neku, Heishin 2nd, Seto 3rd, DarkNite and Nitemare in order, one
  * duel each, with each CPU deck built from that duelist's deck pool. Beat Final 7 is the
  * share of attempts that win all seven in a row. */
-#define F7_FIRST 32
+static const int F7_IDS[] = { 31, 33, 34, 35, 36, 37, 38 };   /* Labyrinth Mage, Sebek, Neku, Heishin 2nd, Seto 3rd, DarkNite, Nitemare */
 #define F7_N 7
 #define F7_RUNS 20000
 static uint32_t g_sim_key;                 /* deck + pools the result belongs to */
@@ -935,9 +935,9 @@ static void sim_maybe_start(void)
     if (!snap_ok() || g_sim_running) return;
     uint32_t key = sim_key_now();
     if (key == g_sim_key) return;
-    for (int k = 0; k < F7_N; k++) if (!g_have_pool[F7_FIRST + k]) { g_f7 = -1; return; }
+    for (int k = 0; k < F7_N; k++) if (!g_have_pool[F7_IDS[k]]) { g_f7 = -1; return; }
     memcpy(g_sim_deck, g_snap.deck, sizeof g_sim_deck);
-    for (int k = 0; k < F7_N; k++) memcpy(g_sim_pools[k], g_pools[F7_FIRST + k][0], sizeof g_sim_pools[k]);
+    for (int k = 0; k < F7_N; k++) memcpy(g_sim_pools[k], g_pools[F7_IDS[k]][0], sizeof g_sim_pools[k]);
     g_sim_running = 1;
     HANDLE th = CreateThread(NULL, 0, sim_thread, (LPVOID)(uintptr_t)key, 0, NULL);
     if (th) CloseHandle(th); else g_sim_running = 0;
