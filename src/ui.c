@@ -1369,26 +1369,11 @@ static void paint_sumcard(HWND h)
     y += S(32);
     fill(dc, x, y, W - 2 * x, 1, C_LINE);
     y += S(12);
-    /* totals */
-    int tw = 0, tl = 0, hard = 0, easy = 0;
-    for (int d = 1; d <= N_DUELISTS; d++) {
-        tw += g_dstat[d].w;
-        tl += g_dstat[d].l;
-        if (!hard || g_dstat[d].chance < g_dstat[hard].chance) hard = d;
-        if (!easy || g_dstat[d].chance > g_dstat[easy].chance) easy = d;
-    }
     char v[96];
-    struct { const char *k; char val[96]; } rows[5];
+    struct { const char *k; char val[96]; } rows[1];
     int nr = 0;
     snprintf(rows[nr].val, 96, "%s", snap_ok() ? (snprintf(v, sizeof v, "%u", g_snap.starchips), v) : "-");
     rows[nr++].k = "Starchips";
-    if (tw + tl) snprintf(rows[nr].val, 96, "%d-%d  (%.0f%%)", tw, tl, 100.0 * tw / (tw + tl));
-    else snprintf(rows[nr].val, 96, "-");
-    rows[nr++].k = "Overall record";
-    snprintf(rows[nr].val, 96, "%s (%.0f%%)", duelist_name(hard), g_dstat[hard].chance * 100);
-    rows[nr++].k = "Toughest duelist";
-    snprintf(rows[nr].val, 96, "%s (%.0f%%)", duelist_name(easy), g_dstat[easy].chance * 100);
-    rows[nr++].k = "Easiest duelist";
     for (int i = 0; i < nr && y + S(20) < H; i++) {
         text_at(dc, x, y, rows[i].k, f_small, C_MUTED);
         RECT r = { x + S(110), y, W - x, y + S(20) };
@@ -1441,30 +1426,28 @@ static void paint_strip(HWND h)
     HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
     HGDIOBJ ob = SelectObject(dc, bm);
     fill(dc, 0, 0, W, H, C_PANEL);
-    int tw = S(102), th = S(96), gap = S(10);
-    if (g_ntracked * (tw + gap) > W && g_ntracked) {   /* shrink to fit narrow windows */
-        tw = (W - gap * (g_ntracked - 1)) / g_ntracked;
-        th = tw * 96 / 102;
-    }
+    int gap = S(8), th = S(96);
+    if (g_ntracked && g_ntracked * th + (g_ntracked - 1) * gap > H)   /* shrink to fit the window height */
+        th = (H - gap * (g_ntracked - 1)) / g_ntracked;
+    int tw = th * 102 / 96;
     for (int i = 0; i < g_ntracked; i++) {
-        int item = g_tracked[i], x = i * (tw + gap);
-        fill(dc, x, 0, tw, th, RGB(0, 0, 0));
-        art_draw(dc, item, x, 0, tw, th);
-        /* count box, bottom-right, like Card Overview v2.1 */
+        int item = g_tracked[i], y = i * (th + gap);
+        fill(dc, 0, y, tw, th, RGB(0, 0, 0));
+        art_draw(dc, item, 0, y, tw, th);
+        /* count box, bottom-right of the picture, like Card Overview v2.1 */
         char num[8] = "-";
         if (snap_ok()) snprintf(num, sizeof num, "%d", item_count(item, 0));
-        int bw = S(30), bh = S(30);
-        RECT box = { x + tw - bw - S(2), th - bh - S(2), x + tw - S(2), th - S(2) };
+        int bw = th * 30 / 96, bh = bw;
+        RECT box = { tw - bw - S(2), y + th - bh - S(2), tw - S(2), y + th - S(2) };
         fill(dc, box.left, box.top, bw, bh, RGB(0, 0, 0));
         frame(dc, box, RGB(0xc8, 0xc8, 0xc8));
         text_rect(dc, box, num, f_count, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        RECT nr = { x, th + S(4), x + tw, H };
-        text_rect(dc, nr, item_name(item), f_small, C_MUTED, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        RECT nr = { tw + S(12), y, W, y + th };
+        text_rect(dc, nr, item_name(item), f_ui, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     if (!g_ntracked) {
-        RECT r = { 0, 0, W, th };
-        text_rect(dc, r, "Nothing tracked. Pick up to 7 on the Card Overview tab.", f_ui, C_MUTED,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT r = { 0, 0, W, S(200) };
+        text_rect(dc, r, "Nothing tracked. Pick up to 7 on the Card Overview tab.", f_ui, C_MUTED, DT_LEFT | DT_WORDBREAK);
     }
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
@@ -1583,21 +1566,23 @@ static void layout(void)
 
     /* summary page */
     {
-        int lw = S(380), x2 = S(12) + lw + S(14), w2 = W - x2 - S(12);
-        int ch = S(334);
+        int lw = S(380), x2 = S(12) + lw + S(14);
+        int ch = S(268);
         place(g_sumcard, S(12), S(12), lw, ch);
         ptext(PG_SUMMARY, S(12), ch + S(22), lw, S(22), "Rank breakdown", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_lists[L_RANK].hwnd, S(12), ch + S(48), lw, H - ch - S(48) - S(12));
-        ptext(PG_SUMMARY, x2, S(10), w2, S(22), "Tracked cards  (in deck)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        ptext(PG_SUMMARY, x2 + w2 / 2, S(12), w2 - w2 / 2, S(22), "Pick them on the Card Overview tab", NULL, &f_small,
-              C_MUTED, DT_SINGLELINE | DT_RIGHT);
-        place(g_strip, x2, S(36), w2, S(STRIP_H));
-        int fy = S(36) + S(STRIP_H) + S(16);
-        ptext(PG_SUMMARY, x2, fy, w2, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        ptext(PG_SUMMARY, x2 + w2 / 2, fy + S(2), w2 - w2 / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
-        place(g_lists[L_SUM_FAV].hwnd, x2, fy + S(26), w2, H - fy - S(26) - S(30));
-        ptext(PG_SUMMARY, x2, H - S(24), w2, S(18), "Favorite passwords on the Passwords tab. Double-click one here to "
-              "copy it. Green = you can afford it.", NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
+        /* tracked cards: one vertical column */
+        int sw = S(260);
+        ptext(PG_SUMMARY, x2, S(10), sw, S(22), "Tracked cards  (in deck)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_strip, x2, S(36), sw, H - S(36) - S(12));
+        /* favorite passwords: small section, bottom right */
+        int fx = x2 + sw + S(16), fw = W - fx - S(12), fh = S(250), fy = H - fh - S(12);
+        if (fw < S(200)) fw = S(200);
+        ptext(PG_SUMMARY, fx, fy, fw, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, fx + fw / 2, fy + S(2), fw - fw / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
+        place(g_lists[L_SUM_FAV].hwnd, fx, fy + S(26), fw, fh - S(26) - S(26));
+        ptext(PG_SUMMARY, fx, H - S(32), fw, S(18), "Favorite them on the Passwords tab. Double-click to copy.", NULL,
+              &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     /* cards page */
     {
