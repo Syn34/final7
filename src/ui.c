@@ -1555,17 +1555,19 @@ static LRESULT CALLBACK stars_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 }
 
 /* ---- common type fusions ------------------------------------------------------------------ */
-typedef struct { const char *recipe; int result; } Fuse;
+typedef struct { const char *recipe; int result; int need; } Fuse;   /* need: ATK a material must reach, 0 = any */
 #define N_FUSES 8
 static const Fuse FUSES[N_FUSES] = {
-    { "Dragon + Plant + Thunder", 613 },   /* Dragon + Plant = B. Dragon Jungle King, + Thunder */
-    { "Beast + Fairy", 483 },              /* Garvas */
-    { "Pyro + Winged Beast", 467 },        /* Crimson Sunbird */
-    { "Spellcaster + Elf", 551 },          /* Dark Elf */
-    { "Spellcaster + Thunder", 458 },      /* Kaminari Attack */
-    { "Beast + Female", 627 },             /* Nekogal #2 */
-    { "Beast + Pyro", 529 },               /* Flame Cerebrus */
-    { "Spellcaster + Jar", 401 },          /* Ushi Oni */
+    /* Below `need` the same pair makes that rule's weaker first-tier result instead
+     * (cards 425 Thunder Dragon, 272 and 462). */
+    { "Dragon + Plant + Thunder", 613, 1600 },   /* Dragon + Plant = B. Dragon Jungle King (2100), + Thunder */
+    { "Beast + Fairy", 483, 0 },                 /* Garvas */
+    { "Pyro + Winged Beast", 467, 1300 },        /* Crimson Sunbird */
+    { "Spellcaster + Elf", 551, 0 },             /* Dark Elf */
+    { "Spellcaster + Thunder", 458, 1500 },      /* Kaminari Attack */
+    { "Beast + Female", 627, 0 },                /* Nekogal #2 */
+    { "Beast + Pyro", 529, 0 },                  /* Flame Cerebrus */
+    { "Spellcaster + Jar", 401, 0 },             /* Ushi Oni */
 };
 
 static void paint_fuses(HWND h)
@@ -1581,25 +1583,26 @@ static void paint_fuses(HWND h)
     fill(dc, 0, 0, W, H, C_PANEL2);
     frame(dc, rc, C_LINE);
     int pad = S(10), rh = (H - S(12)) / N_FUSES;
-    int col = (W - 2 * pad) * 46 / 100;
+    int col = (W - 2 * pad) * 40 / 100;
     for (int i = 0; i < N_FUSES; i++) {
         int y = S(6) + i * rh;
         RECT a = { pad, y, pad + col, y + rh };
         text_rect(dc, a, FUSES[i].recipe, f_ui, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        RECT eq = { pad + col, y, pad + col + S(18), y + rh };
-        text_rect(dc, eq, "=", f_bold, C_MUTED, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        int ix = pad + col + S(22), isz = rh - S(4);
+        /* middle: the ATK one material needs for this outcome */
+        char need[24];
+        if (FUSES[i].need) snprintf(need, sizeof need, "%d+ ATK", FUSES[i].need);
+        else snprintf(need, sizeof need, "any ATK");
+        int mw = S(84);
+        RECT nr = { pad + col, y, pad + col + mw, y + rh };
+        text_rect(dc, nr, need, f_bold, FUSES[i].need ? C_TEC : C_MUTED, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        int ix = pad + col + mw + S(6), isz = rh - S(4);
         art_draw(dc, FUSES[i].result, ix, y + S(2), isz * 102 / 96, isz);
         const Card *c = &CARDS[FUSES[i].result - 1];
         char res[96];
         snprintf(res, sizeof res, "%s", c->name);
         int tx = ix + isz * 102 / 96 + S(8);
-        RECT r = { tx, y, W - pad - S(60), y + rh };
+        RECT r = { tx, y, W - pad, y + rh };
         text_rect(dc, r, res, f_bold, C_GOLD, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        char atk[24];
-        snprintf(atk, sizeof atk, "%d/%d", c->atk, c->def);
-        RECT ar = { W - pad - S(70), y, W - pad, y + rh };
-        text_rect(dc, ar, atk, f_small, C_MUTED, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     }
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
