@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "fm.h"
+#include "art.h"
 
 /* ---- palette --------------------------------------------------------------- */
 #define C_BG     RGB(0x0e, 0x13, 0x20)
@@ -50,14 +51,14 @@ static COLORREF letter_color(char c)
 enum {
     ID_REFRESH = 101, ID_ATTACH, ID_DETACH, ID_DEMO, ID_OVERLAY,
     ID_TAB0 = 110,
-    ID_TRACK = 120, ID_UNTRACK, ID_TRACKDECK, ID_TRACKEXO, ID_CLEAR,
+    ID_TRACK = 120, ID_UNTRACK, ID_MOVEUP, ID_MOVEDN, ID_CLEAR, ID_RESETDEF,
     ID_PW_UNOWNED = 130, ID_PW_AFFORD, ID_PW_FAVONLY, ID_PW_FAV,
     ID_CARD_SEARCH = 140, ID_PW_SEARCH,
     ID_EMU = 150, ID_TIER,
     ID_LOG = 160,
     ID_LIST = 200,
 };
-enum { L_RANK, L_DROPS, L_ALL, L_TRACK, L_DUELISTS, L_DETAIL, L_PW, L_SUM_TRACK, L_SUM_FAV, L_DROPDUEL, N_LISTS };
+enum { L_RANK, L_DROPS, L_ALL, L_TRACK, L_DUELISTS, L_DETAIL, L_PW, L_SUM_FAV, L_DROPDUEL, N_LISTS };
 enum { PG_SUMMARY, PG_DUEL, PG_CARDS, PG_DROPS, PG_DUELISTS, PG_PW, PG_LOG, N_PAGES };
 static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Duel & Rank", "Card Overview", "Drops", "Duelists",
                                                  "Passwords", "Log" };
@@ -68,12 +69,13 @@ static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Duel & Rank", "Card
 
 /* ---- globals ---------------------------------------------------------------- */
 static HINSTANCE g_inst;
-static HWND g_main, g_pages[N_PAGES], g_rankpanel, g_duelhead, g_sumcard, g_overlay;
+static HWND g_main, g_pages[N_PAGES], g_rankpanel, g_duelhead, g_sumcard, g_strip, g_overlay;
+static HIMAGELIST g_il;
 static HWND g_emu_combo, g_tier_combo, g_card_search, g_pw_search, g_log;
 static HWND g_btn[64];
 static int g_page;
 static int g_dpi = 96;
-static HFONT f_ui, f_bold, f_small, f_smallb, f_title, f_huge, f_big, f_med, f_lp, f_lpnum, f_mono;
+static HFONT f_ui, f_bold, f_small, f_smallb, f_title, f_huge, f_big, f_med, f_lp, f_lpnum, f_mono, f_count;
 static HBRUSH br_bg, br_panel, br_panel2;
 
 static uint8_t *g_ram;
@@ -90,10 +92,12 @@ static int g_nemus;
 static char g_status[256] = "Not attached";
 static COLORREF g_status_color = C_RED;
 
-static int g_tracked[N_CARDS], g_ntracked;
+#define MAX_TRACK 7
+static const int DEFAULT_TRACK[MAX_TRACK] = { ITEM_DRAGON, ITEM_THUNDER, 315, 332, 686, 713, 657 };
+static int g_tracked[MAX_TRACK], g_ntracked;          /* Card Overview items shown on Summary */
+static int g_iprev[ART_ITEMS + 1], g_ichg_delta[ART_ITEMS + 1], g_have_iprev;
+static uint64_t g_ichg_time[ART_ITEMS + 1];
 static int g_prev[N_CARDS + 1], g_have_prev;
-static int g_chg_delta[N_CARDS + 1];
-static uint64_t g_chg_time[N_CARDS + 1];
 
 typedef struct {
     char when[20];
@@ -128,6 +132,8 @@ static char t_tracked_sum[96], t_last_drops[512], t_pw_count[96], t_drop_caption
             t_detail_note[200];
 
 #define S(x) MulDiv((x), g_dpi, 96)
+#define HEADER_H 48   /* title bar height, tabs sit below it */
+#define STRIP_H 124   /* summary picture strip: 96 px tiles + name */
 
 static uint64_t now_ms(void) { return GetTickCount64(); }
 
@@ -159,7 +165,7 @@ static void data_path(char *out, const char *file) { snprintf(out, MAX_PATH, "%s
 static void save_tracked(void)
 {
     char p[MAX_PATH];
-    data_path(p, "tracked.txt");
+    data_path(p, "overview.txt");
     FILE *f = fopen(p, "w");
     if (!f) return;
     for (int i = 0; i < g_ntracked; i++) fprintf(f, "%d\n", g_tracked[i]);
@@ -169,17 +175,16 @@ static void save_tracked(void)
 static void load_tracked(void)
 {
     char p[MAX_PATH];
-    data_path(p, "tracked.txt");
+    data_path(p, "overview.txt");
     FILE *f = fopen(p, "r");
     g_ntracked = 0;
     if (!f) {
-        static const int def[] = { 1, 17, 18, 19, 20, 21 };
-        for (int i = 0; i < 6; i++) g_tracked[g_ntracked++] = def[i];
+        for (int i = 0; i < MAX_TRACK; i++) g_tracked[g_ntracked++] = DEFAULT_TRACK[i];
         return;
     }
     int id;
-    while (g_ntracked < N_CARDS && fscanf(f, "%d", &id) == 1)
-        if (id >= 1 && id <= N_CARDS) g_tracked[g_ntracked++] = id;
+    while (g_ntracked < MAX_TRACK && fscanf(f, "%d", &id) == 1)
+        if (id >= 1 && id <= ART_ITEMS) g_tracked[g_ntracked++] = id;
     fclose(f);
 }
 
@@ -517,48 +522,86 @@ static void t_drops(int id, int col, char *b, int n) { pool_text(g_drop_pool, id
 static void t_detail(int id, int col, char *b, int n) { pool_text(g_detail_pool, id, col, b, n); }
 static COLORREF c_pool(int id, COLORREF *bg) { (void)bg; return pool_color(id); }
 
-static void t_all(int id, int col, char *b, int n)
+/* ---- Card Overview items: the 725 entries of Card Overview v2.1 ------------- */
+static const char *item_name(int i)
 {
-    const Card *c = &CARDS[id - 1];
+    if (i == ITEM_DRAGON) return "Dragon";
+    if (i == ITEM_EQUIP) return "Equip";
+    if (i == ITEM_THUNDER) return "Thunder";
+    return card_name(i);
+}
+
+static const char *item_kind(int i)
+{
+    if (i > N_CARDS) return "All cards of this type";
+    return CARDS[i - 1].type;
+}
+
+static int item_matches(int item, int id)
+{
+    if (item <= N_CARDS) return item == id;
+    const char *t = item == ITEM_DRAGON ? "Dragon" : (item == ITEM_EQUIP ? "Equip" : "Thunder");
+    return !strcmp(CARDS[id - 1].type, t);
+}
+
+/* copies in the deck (where 0) or chest (where 1) */
+static int item_count(int item, int where)
+{
+    if (!snap_ok()) return 0;
+    int n = 0;
+    if (item <= N_CARDS) return where ? g_snap.trunk[item] : g_snap.deck_count[item];
+    if (where == 0) {
+        for (int k = 0; k < 40; k++) n += item_matches(item, g_snap.deck[k]);
+    } else {
+        for (int id = 1; id <= N_CARDS; id++) if (item_matches(item, id)) n += g_snap.trunk[id];
+    }
+    return n;
+}
+
+static int is_tracked(int item)
+{
+    for (int i = 0; i < g_ntracked; i++) if (g_tracked[i] == item) return 1;
+    return 0;
+}
+
+static int recent_change(int item) { return g_ichg_time[item] && now_ms() - g_ichg_time[item] < 15000; }
+
+static void t_all(int item, int col, char *b, int n)
+{
+    int ok = snap_ok();
     switch (col) {
-    case 0: snprintf(b, n, "%d", id); break;
-    case 1: snprintf(b, n, "%s", c->name); break;
-    case 2: snprintf(b, n, "%s", c->type); break;
-    case 3: snprintf(b, n, "%d", c->atk); break;
-    case 4: snprintf(b, n, "%d", c->def); break;
-    default: owned_str(id, b, n); break;
+    case 0: snprintf(b, n, "%s", item_name(item)); break;
+    case 1: snprintf(b, n, "%s", item_kind(item)); break;
+    case 2: ok ? snprintf(b, n, "%d", item_count(item, 0)) : (b[0] = 0); break;
+    case 3: ok ? snprintf(b, n, "%d", item_count(item, 1)) : (b[0] = 0); break;
+    default: ok ? snprintf(b, n, "%d", item_count(item, 0) + item_count(item, 1)) : (b[0] = 0); break;
     }
 }
-static COLORREF c_all(int id, COLORREF *bg)
+static COLORREF c_all(int item, COLORREF *bg)
 {
     (void)bg;
-    if (snap_ok() && owned_total(&g_snap, id) == 0) return C_MUTED;
+    if (is_tracked(item)) return C_GOLD;
+    if (snap_ok() && item_count(item, 0) + item_count(item, 1) == 0) return C_MUTED;
     return C_TEXT;
 }
 
-static int recent_change(int id) { return g_chg_time[id] && now_ms() - g_chg_time[id] < 15000; }
-
-static void t_track(int id, int col, char *b, int n)
+static void t_track(int item, int col, char *b, int n)
 {
-    const Card *c = &CARDS[id - 1];
     int ok = snap_ok();
     switch (col) {
-    case 0: snprintf(b, n, "%d", id); break;
-    case 1: snprintf(b, n, "%s", c->name); break;
-    case 2: ok ? snprintf(b, n, "%d", g_snap.deck_count[id]) : (b[0] = 0); break;
-    case 3: ok ? snprintf(b, n, "%d", g_snap.trunk[id]) : (b[0] = 0); break;
-    case 4: ok ? snprintf(b, n, "%d", owned_total(&g_snap, id)) : (b[0] = 0); break;
-    case 5: recent_change(id) ? snprintf(b, n, "%+d", g_chg_delta[id]) : (b[0] = 0); break;
-    default: snprintf(b, n, "%d/%d", c->atk, c->def); break;
+    case 0: snprintf(b, n, "%s", item_name(item)); break;
+    case 1: ok ? snprintf(b, n, "%d", item_count(item, 0)) : (b[0] = 0); break;
+    case 2: ok ? snprintf(b, n, "%d", item_count(item, 1)) : (b[0] = 0); break;
+    case 3: ok ? snprintf(b, n, "%d", item_count(item, 0) + item_count(item, 1)) : (b[0] = 0); break;
+    default: recent_change(item) ? snprintf(b, n, "%+d", g_ichg_delta[item]) : (b[0] = 0); break;
     }
 }
-static COLORREF c_track(int id, COLORREF *bg)
+static COLORREF c_track(int item, COLORREF *bg)
 {
-    if (recent_change(id)) {
-        *bg = g_chg_delta[id] > 0 ? C_UPBG : C_DOWNBG;
+    if (recent_change(item)) {
+        *bg = g_ichg_delta[item] > 0 ? C_UPBG : C_DOWNBG;
         return RGB(255, 255, 255);
     }
-    if (snap_ok() && owned_total(&g_snap, id) == 0) return C_MUTED;
     return C_TEXT;
 }
 
@@ -617,11 +660,6 @@ static COLORREF c_pw(int id, COLORREF *bg)
 }
 
 /* summary lists */
-static void t_sumtrack(int id, int col, char *b, int n)
-{
-    static const int map[] = { 1, 2, 3, 4, 5 };
-    t_track(id, map[col], b, n);
-}
 static void t_sumfav(int id, int col, char *b, int n)
 {
     const Card *c = &CARDS[id - 1];
@@ -673,25 +711,29 @@ static void rebuild_all_cards(void)
 {
     char q[128];
     GetWindowText(g_card_search, q, sizeof q);
-    static int items[N_CARDS];
-    int n = 0, qid = atoi(q);
+    static int items[ART_ITEMS];
+    int n = 0;
+    static const int specials[] = { ITEM_DRAGON, ITEM_EQUIP, ITEM_THUNDER };
+    for (int k = 0; k < 3; k++)   /* type entries first, like Card Overview v2.1 */
+        if (!q[0] || contains_ci(item_name(specials[k]), q) || contains_ci("type", q)) items[n++] = specials[k];
     for (int id = 1; id <= N_CARDS; id++) {
         const Card *c = &CARDS[id - 1];
-        if (q[0] && !(contains_ci(c->name, q) || contains_ci(c->type, q) || qid == id)) continue;
+        if (q[0] && !(contains_ci(c->name, q) || contains_ci(c->type, q) || atoi(q) == id)) continue;
         items[n++] = id;
     }
+    /* cards alphabetical, as in Card Overview v2.1 */
+    for (int i = 4; i < n; i++)
+        for (int j = i; j > 0 && items[j - 1] <= N_CARDS && _stricmp(item_name(items[j]), item_name(items[j - 1])) < 0; j--) {
+            int t = items[j]; items[j] = items[j - 1]; items[j - 1] = t;
+        }
     vlist_set_rows(&g_lists[L_ALL], items, n);
 }
 
 static void rebuild_tracked(void)
 {
     vlist_set_rows(&g_lists[L_TRACK], g_tracked, g_ntracked);
-    vlist_set_rows(&g_lists[L_SUM_TRACK], g_tracked, g_ntracked);
-    int copies = 0;
-    if (snap_ok())
-        for (int i = 0; i < g_ntracked; i++) copies += owned_total(&g_snap, g_tracked[i]);
-    if (snap_ok()) snprintf(t_tracked_sum, sizeof t_tracked_sum, "%d tracked  |  %d copies owned", g_ntracked, copies);
-    else snprintf(t_tracked_sum, sizeof t_tracked_sum, "%d tracked", g_ntracked);
+    snprintf(t_tracked_sum, sizeof t_tracked_sum, "%d of %d slots used", g_ntracked, MAX_TRACK);
+    if (g_strip) InvalidateRect(g_strip, NULL, FALSE);
 }
 
 static void rebuild_pw(void)
@@ -937,21 +979,19 @@ static void process_snapshot(void)
     follow_pending();
     if (duel_active()) cache_pools();
 
-    /* card count changes */
-    int changed_any = 0;
-    for (int id = 1; id <= N_CARDS; id++) {
-        int tot = owned_total(&g_snap, id);
-        if (g_have_prev && tot != g_prev[id]) {
-            g_chg_delta[id] = tot - g_prev[id];
-            g_chg_time[id] = now_ms();
-            changed_any = 1;
-            for (int i = 0; i < g_ntracked; i++)
-                if (g_tracked[i] == id) { logf_("%s: %d -> %d", CARDS[id - 1].name, g_prev[id], tot); break; }
-        }
-        g_prev[id] = tot;
-    }
+    /* card totals (passwords tab refresh) and Card Overview deck counts */
+    for (int id = 1; id <= N_CARDS; id++) g_prev[id] = owned_total(&g_snap, id);
     g_have_prev = 1;
-    (void)changed_any;
+    for (int item = 1; item <= ART_ITEMS; item++) {
+        int d = item_count(item, 0);
+        if (g_have_iprev && d != g_iprev[item]) {
+            g_ichg_delta[item] = d - g_iprev[item];
+            g_ichg_time[item] = now_ms();
+            if (is_tracked(item)) logf_("%s in deck: %d -> %d", item_name(item), g_iprev[item], d);
+        }
+        g_iprev[item] = d;
+    }
+    g_have_iprev = 1;
     rebuild_tracked();
 
     /* last drops text */
@@ -998,6 +1038,7 @@ static void process_snapshot(void)
     InvalidateRect(g_rankpanel, NULL, FALSE);
     InvalidateRect(g_duelhead, NULL, FALSE);
     InvalidateRect(g_sumcard, NULL, FALSE);
+    InvalidateRect(g_strip, NULL, FALSE);
     if (g_overlay) InvalidateRect(g_overlay, NULL, FALSE);
     if (IsWindowVisible(g_pages[PG_SUMMARY])) InvalidateRect(g_pages[PG_SUMMARY], NULL, FALSE);
     if (IsWindowVisible(g_pages[PG_CARDS])) InvalidateRect(g_pages[PG_CARDS], NULL, FALSE);
@@ -1137,15 +1178,23 @@ static void start_demo(void)
 }
 
 /* ---- tracked cards actions ---------------------------------------------------------- */
-static void track_ids(const int *ids, int n)
+static void tracked_changed(void)
 {
-    int added = 0;
-    for (int k = 0; k < n; k++) {
-        int found = 0;
-        for (int i = 0; i < g_ntracked; i++) if (g_tracked[i] == ids[k]) found = 1;
-        if (!found && g_ntracked < N_CARDS) { g_tracked[g_ntracked++] = ids[k]; added = 1; }
+    save_tracked();
+    rebuild_tracked();
+    InvalidateRect(g_lists[L_ALL].hwnd, NULL, FALSE);
+    InvalidateRect(g_pages[PG_CARDS], NULL, TRUE);
+}
+
+static void track_item(int item)
+{
+    if (item < 1 || is_tracked(item)) return;
+    if (g_ntracked >= MAX_TRACK) {
+        MessageBox(g_main, "All 7 Summary slots are in use. Untrack one first.", APP_NAME, MB_ICONINFORMATION);
+        return;
     }
-    if (added) { save_tracked(); rebuild_tracked(); InvalidateRect(g_pages[PG_CARDS], NULL, TRUE); }
+    g_tracked[g_ntracked++] = item;
+    tracked_changed();
 }
 
 static void untrack_selected(void)
@@ -1158,9 +1207,21 @@ static void untrack_selected(void)
             g_ntracked--;
             break;
         }
-    save_tracked();
-    rebuild_tracked();
-    InvalidateRect(g_pages[PG_CARDS], NULL, TRUE);
+    tracked_changed();
+}
+
+static void move_selected(int dir)
+{
+    int id = vlist_selected(&g_lists[L_TRACK]);
+    for (int i = 0; i < g_ntracked; i++)
+        if (g_tracked[i] == id && i + dir >= 0 && i + dir < g_ntracked) {
+            int t = g_tracked[i]; g_tracked[i] = g_tracked[i + dir]; g_tracked[i + dir] = t;
+            tracked_changed();
+            VList *v = &g_lists[L_TRACK];
+            for (int r = 0; r < v->nrows; r++)
+                if (v->rows[r] == id) ListView_SetItemState(v->hwnd, r, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            break;
+        }
 }
 
 static void copy_password(int which)
@@ -1231,7 +1292,7 @@ static void paint_main(HWND h)
     HDC wdc = BeginPaint(h, &ps);
     RECT rc;
     GetClientRect(h, &rc);
-    int W = rc.right, H = S(132);
+    int W = rc.right, H = S(HEADER_H);
     HDC dc = CreateCompatibleDC(wdc);
     HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
     HGDIOBJ ob = SelectObject(dc, bm);
@@ -1250,11 +1311,6 @@ static void paint_main(HWND h)
     RECT sr = { tx + S(18), S(12), W - S(560), S(34) };
     text_rect(dc, sr, g_status, f_ui, C_TEXT, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
-    /* stats row */
-    char chips[32] = "-";
-    if (snap_ok()) snprintf(chips, sizeof chips, "%u", g_snap.starchips);
-    text_at(dc, S(16), S(48), "STARCHIPS", f_smallb, C_MUTED);
-    text_at(dc, S(16), S(64), chips, f_med, C_TEXT);
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
@@ -1474,6 +1530,59 @@ static LRESULT CALLBACK sum_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     return DefWindowProc(h, m, w, l);
 }
 
+/* ---- summary picture strip ---------------------------------------------------------------- */
+static void paint_strip(HWND h)
+{
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    int W = rc.right, H = rc.bottom;
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
+    HGDIOBJ ob = SelectObject(dc, bm);
+    fill(dc, 0, 0, W, H, C_PANEL);
+    int tw = S(102), th = S(96), gap = S(10);
+    if (g_ntracked * (tw + gap) > W && g_ntracked) {   /* shrink to fit narrow windows */
+        tw = (W - gap * (g_ntracked - 1)) / g_ntracked;
+        th = tw * 96 / 102;
+    }
+    for (int i = 0; i < g_ntracked; i++) {
+        int item = g_tracked[i], x = i * (tw + gap);
+        fill(dc, x, 0, tw, th, RGB(0, 0, 0));
+        art_draw(dc, item, x, 0, tw, th);
+        /* count box, bottom-right, like Card Overview v2.1 */
+        char num[8] = "-";
+        if (snap_ok()) snprintf(num, sizeof num, "%d", item_count(item, 0));
+        int bw = S(30), bh = S(30);
+        RECT box = { x + tw - bw - S(2), th - bh - S(2), x + tw - S(2), th - S(2) };
+        COLORREF bg = RGB(0, 0, 0);
+        if (recent_change(item)) bg = g_ichg_delta[item] > 0 ? RGB(0x1e, 0x7a, 0x40) : RGB(0x8a, 0x22, 0x2c);
+        fill(dc, box.left, box.top, bw, bh, bg);
+        frame(dc, box, RGB(0xc8, 0xc8, 0xc8));
+        text_rect(dc, box, num, f_count, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        RECT nr = { x, th + S(4), x + tw, H };
+        text_rect(dc, nr, item_name(item), f_small, C_MUTED, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+    if (!g_ntracked) {
+        RECT r = { 0, 0, W, th };
+        text_rect(dc, r, "Nothing tracked. Pick up to 7 on the Card Overview tab.", f_ui, C_MUTED,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+    BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, ob);
+    DeleteObject(bm);
+    DeleteDC(dc);
+    EndPaint(h, &ps);
+}
+
+static LRESULT CALLBACK strip_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_PAINT) { paint_strip(h); return 0; }
+    if (m == WM_ERASEBKGND) return 1;
+    return DefWindowProc(h, m, w, l);
+}
+
 /* ---- overlay ------------------------------------------------------------------------ */
 static void paint_overlay(HWND h)
 {
@@ -1567,9 +1676,9 @@ static void layout(void)
     }
     x -= S(250);
     place(g_emu_combo, x, y + S(1), S(250), S(300));
-    for (int i = 0; i < N_PAGES; i++) place(g_btn[ID_TAB0 - 100 + i], S(12) + i * S(128), S(98), S(124), S(32));
+    for (int i = 0; i < N_PAGES; i++) place(g_btn[ID_TAB0 - 100 + i], S(12) + i * S(128), S(HEADER_H), S(124), S(32));
 
-    int py = S(132), pw = W - S(20), ph = H - py - S(10);
+    int py = S(HEADER_H + 34), pw = W - S(20), ph = H - py - S(10);
     for (int i = 0; i < N_PAGES; i++) place(g_pages[i], S(10), py, pw, ph);
     W = pw;
     H = ph;
@@ -1582,11 +1691,11 @@ static void layout(void)
         ptext(PG_SUMMARY, S(12), S(340), lw, S(22), "Possible drops right now", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_lists[L_DROPS].hwnd, S(12), S(366), lw, H - S(366) - S(52));
         ptext(PG_SUMMARY, S(12), H - S(46), lw, S(42), NULL, t_drop_caption, &f_small, C_MUTED, DT_WORDBREAK);
-        int half = (H - S(36) - S(60)) / 2;
-        ptext(PG_SUMMARY, x2, S(10), w2, S(22), "Tracked cards", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        ptext(PG_SUMMARY, x2 + w2 / 2, S(12), w2 - w2 / 2, S(22), NULL, t_tracked_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
-        place(g_lists[L_SUM_TRACK].hwnd, x2, S(36), w2, half);
-        int fy = S(36) + half + S(14);
+        ptext(PG_SUMMARY, x2, S(10), w2, S(22), "Tracked cards  (in deck)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, x2 + w2 / 2, S(12), w2 - w2 / 2, S(22), "Pick them on the Card Overview tab", NULL, &f_small,
+              C_MUTED, DT_SINGLELINE | DT_RIGHT);
+        place(g_strip, x2, S(36), w2, S(STRIP_H));
+        int fy = S(36) + S(STRIP_H) + S(16);
         ptext(PG_SUMMARY, x2, fy, w2, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_SUMMARY, x2 + w2 / 2, fy + S(2), w2 - w2 / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_SUM_FAV].hwnd, x2, fy + S(26), w2, H - fy - S(26) - S(30));
@@ -1605,21 +1714,21 @@ static void layout(void)
     /* cards page */
     {
         int mid = S(150);
-        int w1 = (W - S(48) - mid) * 46 / 100, mx = S(12) + w1 + S(12), x3 = mx + mid + S(12), w3 = W - x3 - S(12);
-        ptext(PG_CARDS, S(12), S(10), w1, S(22), "All cards", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        int w1 = (W - S(48) - mid) * 52 / 100, mx = S(12) + w1 + S(12), x3 = mx + mid + S(12), w3 = W - x3 - S(12);
+        ptext(PG_CARDS, S(12), S(10), w1, S(22), "Available (same list as Card Overview v2.1)", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         place(g_card_search, S(16), S(40), w1 - S(8), S(22));
         SetRect(&g_edit_frames[0], S(12), S(36), S(12) + w1, S(66));
         place(g_lists[L_ALL].hwnd, S(12), S(74), w1, H - S(74) - S(30));
-        ptext(PG_CARDS, S(12), H - S(24), w1, S(18), "Search by name, type or ID. Double-click to track.", NULL,
-              &f_small, C_MUTED, DT_SINGLELINE);
-        int by = H / 2 - S(130);
-        int ids[] = { ID_TRACK, ID_UNTRACK, ID_TRACKDECK, ID_TRACKEXO, ID_CLEAR };
-        int gaps[] = { 0, 38, 62, 38, 62 };
-        for (int i = 0; i < 5; i++) {
+        ptext(PG_CARDS, S(12), H - S(24), w1, S(18), "Dragon, Equip and Thunder count every card of that type. "
+              "Double-click to track.", NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
+        int by = H / 2 - S(150);
+        int ids[] = { ID_TRACK, ID_UNTRACK, ID_MOVEUP, ID_MOVEDN, ID_RESETDEF, ID_CLEAR };
+        int gaps[] = { 0, 38, 62, 38, 62, 38 };
+        for (int i = 0; i < 6; i++) {
             by += S(gaps[i]);
             place(g_btn[ids[i] - 100], mx, by, mid, S(30));
         }
-        ptext(PG_CARDS, x3, S(10), w3, S(22), "Tracked cards", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_CARDS, x3, S(10), w3, S(22), "Tracked on Summary", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_CARDS, x3 + w3 / 2, S(12), w3 - w3 / 2, S(22), NULL, t_tracked_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         ptext(PG_CARDS, x3, S(42), w3, S(20), "Counts update live from your deck and trunk. Changes flash for 15 s.",
               NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1833,6 +1942,9 @@ static LRESULT on_list_notify(NMHDR *nh)
         NMLVDISPINFO *di = (NMLVDISPINFO *)nh;
         if ((di->item.mask & LVIF_TEXT) && di->item.iItem >= 0 && di->item.iItem < v->nrows)
             v->text(v->rows[di->item.iItem], di->item.iSubItem, di->item.pszText, di->item.cchTextMax);
+        if ((di->item.mask & LVIF_IMAGE) && (which == L_ALL || which == L_TRACK) && di->item.iItem >= 0 &&
+            di->item.iItem < v->nrows)
+            di->item.iImage = v->rows[di->item.iItem] - 1;
         return 0;
     }
     case NM_CUSTOMDRAW: {
@@ -1862,7 +1974,7 @@ static LRESULT on_list_notify(NMHDR *nh)
         return 0;
     }
     case NM_DBLCLK:
-        if (which == L_ALL) { int id = vlist_selected(v); if (id > 0) track_ids(&id, 1); }
+        if (which == L_ALL) track_item(vlist_selected(v));
         else if (which == L_TRACK) untrack_selected();
         else if (which == L_PW || which == L_SUM_FAV) copy_password(which);
         return 0;
@@ -1879,7 +1991,7 @@ static LRESULT on_list_notify(NMHDR *nh)
     case LVN_KEYDOWN: {
         NMLVKEYDOWN *k = (NMLVKEYDOWN *)nh;
         if (which == L_TRACK && k->wVKey == VK_DELETE) untrack_selected();
-        if (which == L_ALL && k->wVKey == VK_RETURN) { int id = vlist_selected(v); if (id > 0) track_ids(&id, 1); }
+        if (which == L_ALL && k->wVKey == VK_RETURN) track_item(vlist_selected(v));
         if ((which == L_PW || which == L_SUM_FAV) && k->wVKey == 'C' && (GetKeyState(VK_CONTROL) & 0x8000)) copy_password(which);
         if (which == L_PW && k->wVKey == VK_SPACE) toggle_fav(vlist_selected(v));
         return 0;
@@ -1928,9 +2040,7 @@ static void create_children(void)
     HWND p = g_pages[PG_SUMMARY];
     g_sumcard = CreateWindow("FMSum", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     vlist_create(&g_lists[L_DROPS], L_DROPS, p, 3, pool_cols, pool_w, "lcc", t_drops, c_pool);
-    static const char *const st_cols[] = { "Card", "In deck", "In trunk", "Total", "Change" };
-    static const int st_w[] = { 200, 70, 76, 60, 70 };
-    vlist_create(&g_lists[L_SUM_TRACK], L_SUM_TRACK, p, 5, st_cols, st_w, "lcccc", t_sumtrack, c_track);
+    g_strip = CreateWindow("FMStrip", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     static const char *const sf_cols[] = { "Card", "Password", "Cost", "Owned" };
     static const int sf_w[] = { 200, 100, 70, 64 };
     vlist_create(&g_lists[L_SUM_FAV], L_SUM_FAV, p, 4, sf_cols, sf_w, "lccc", t_sumfav, c_sumfav);
@@ -1949,17 +2059,23 @@ static void create_children(void)
     /* cards page */
     p = g_pages[PG_CARDS];
     g_card_search = mkedit(p, ID_CARD_SEARCH);
-    static const char *const all_cols[] = { "ID", "Name", "Type", "ATK", "DEF", "Owned" };
-    static const int all_w[] = { 44, 190, 100, 54, 54, 62 };
-    vlist_create(&g_lists[L_ALL], L_ALL, p, 6, all_cols, all_w, "llcccc", t_all, c_all);
+    g_il = art_imagelist(S(30), S(28));
+    static const char *const all_cols[] = { "Card / type", "Kind", "In deck", "In trunk", "Total" };
+    static const int all_w[] = { 220, 120, 62, 66, 54 };
+    vlist_create(&g_lists[L_ALL], L_ALL, p, 5, all_cols, all_w, "llccc", t_all, c_all);
     mkbutton(p, ID_TRACK, "Track  >");
     mkbutton(p, ID_UNTRACK, "<  Untrack");
-    mkbutton(p, ID_TRACKDECK, "Track my deck");
-    mkbutton(p, ID_TRACKEXO, "Track Exodia");
+    mkbutton(p, ID_MOVEUP, "Move up");
+    mkbutton(p, ID_MOVEDN, "Move down");
+    mkbutton(p, ID_RESETDEF, "Reset to default");
     mkbutton(p, ID_CLEAR, "Clear all");
-    static const char *const tr_cols[] = { "ID", "Name", "In deck", "In trunk", "Total", "Change", "ATK/DEF" };
-    static const int tr_w[] = { 44, 200, 70, 76, 60, 70, 96 };
-    vlist_create(&g_lists[L_TRACK], L_TRACK, p, 7, tr_cols, tr_w, "llccccc", t_track, c_track);
+    static const char *const tr_cols[] = { "Card / type", "In deck", "In trunk", "Total", "Change" };
+    static const int tr_w[] = { 200, 66, 70, 56, 66 };
+    vlist_create(&g_lists[L_TRACK], L_TRACK, p, 5, tr_cols, tr_w, "lcccc", t_track, c_track);
+    if (g_il) {
+        ListView_SetImageList(g_lists[L_ALL].hwnd, g_il, LVSIL_SMALL);
+        ListView_SetImageList(g_lists[L_TRACK].hwnd, g_il, LVSIL_SMALL);
+    }
 
     /* duelists page */
     p = g_pages[PG_DUELISTS];
@@ -2069,19 +2185,19 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         case ID_DETACH: detach_all(); logf_("Detached."); break;
         case ID_DEMO: start_demo(); break;
         case ID_OVERLAY: toggle_overlay(); break;
-        case ID_TRACK: { int id2 = vlist_selected(&g_lists[L_ALL]); if (id2 > 0) track_ids(&id2, 1); break; }
+        case ID_TRACK: track_item(vlist_selected(&g_lists[L_ALL])); break;
         case ID_UNTRACK: untrack_selected(); break;
-        case ID_TRACKDECK:
-            if (!snap_ok()) MessageBox(h, "Attach to the game with a save loaded first.", APP_NAME, MB_ICONINFORMATION);
-            else { int ids[40]; for (int i = 0; i < 40; i++) ids[i] = g_snap.deck[i]; track_ids(ids, 40); }
+        case ID_MOVEUP: move_selected(-1); break;
+        case ID_MOVEDN: move_selected(1); break;
+        case ID_RESETDEF:
+            g_ntracked = 0;
+            for (int i = 0; i < MAX_TRACK; i++) g_tracked[g_ntracked++] = DEFAULT_TRACK[i];
+            tracked_changed();
             break;
-        case ID_TRACKEXO: { int ids[] = { 17, 18, 19, 20, 21 }; track_ids(ids, 5); break; }
         case ID_CLEAR:
-            if (g_ntracked && MessageBox(h, "Stop tracking all cards?", APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            if (g_ntracked && MessageBox(h, "Remove all tracked cards from Summary?", APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES) {
                 g_ntracked = 0;
-                save_tracked();
-                rebuild_tracked();
-                InvalidateRect(g_pages[PG_CARDS], NULL, TRUE);
+                tracked_changed();
             }
             break;
         case ID_PW_UNOWNED: g_pw_unowned = !g_pw_unowned; InvalidateRect(g_btn[id - 100], NULL, FALSE); rebuild_pw(); break;
@@ -2145,6 +2261,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     load_history();
     load_pools();
     load_favs();
+    art_init();
 
     f_ui = mkfont("Segoe UI", 10, FW_NORMAL);
     f_bold = mkfont("Segoe UI", 10, FW_BOLD);
@@ -2157,6 +2274,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     f_lp = mkfont("Segoe UI", 30, FW_BOLD);
     f_lpnum = mkfont("Segoe UI", 17, FW_BOLD);
     f_mono = mkfont("Consolas", 10, FW_NORMAL);
+    f_count = mkfont("Impact", 15, FW_NORMAL);
     br_bg = CreateSolidBrush(C_BG);
     br_panel = CreateSolidBrush(C_PANEL);
     br_panel2 = CreateSolidBrush(C_PANEL2);
@@ -2180,6 +2298,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     RegisterClassEx(&wc);
     wc.lpfnWndProc = head_proc;
     wc.lpszClassName = "FMHead";
+    RegisterClassEx(&wc);
+    wc.lpfnWndProc = strip_proc;
+    wc.lpszClassName = "FMStrip";
     RegisterClassEx(&wc);
     wc.lpfnWndProc = sum_proc;
     wc.lpszClassName = "FMSum";

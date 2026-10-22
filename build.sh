@@ -8,6 +8,6 @@ WINDRES=${WINDRES:-x86_64-w64-mingw32-windres}
 mkdir -p build
 $WINDRES src/app.rc -O coff -o build/app.res
 $CC -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -s -static -mwindows \
-    src/ui.c src/game.c src/emu.c src/demo.c src/cards_data.c build/app.res \
-    -o final7.exe -lcomctl32 -luxtheme -lgdi32 -luser32 -lm
+    src/ui.c src/game.c src/emu.c src/demo.c src/art.c src/cards_data.c build/app.res \
+    -o final7.exe -lcomctl32 -luxtheme -lgdiplus -lshlwapi -lole32 -lgdi32 -luser32 -lm
 echo "Built final7.exe"
