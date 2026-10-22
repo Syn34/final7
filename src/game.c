@@ -1,4 +1,4 @@
-/* FM Tracker - game memory parsing, duel rank arithmetic, duel detection, win chance. */
+/* final7 - game memory parsing, duel rank arithmetic, duel detection, win chance. */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>

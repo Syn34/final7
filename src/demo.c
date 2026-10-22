@@ -1,4 +1,4 @@
-/* FM Tracker - a fake game that plays endless duels, for trying the tracker out. */
+/* final7 - a fake game that plays endless duels, for trying the tracker out. */
 #include <string.h>
 
 #include "fm.h"

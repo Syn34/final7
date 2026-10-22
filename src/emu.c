@@ -1,4 +1,4 @@
-/* FM Tracker - read-only access to PS1 emulators and locating PS1 main RAM.
+/* final7 - read-only access to PS1 emulators and locating PS1 main RAM.
  *
  * Pointer/signature methods adapted from emu-help by Jujstme (MIT),
  * https://github.com/Jujstme/emu-help. Anything unrecognised falls back to
@@ -425,7 +425,7 @@ int emu_attach(Attach *a, const EmuProc *p, char *err, int errlen, volatile int 
     if (!a->handle) a->handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, p->pid);
     if (!a->handle) {
         snprintf(err, errlen, "Could not open %s (pid %lu). If the emulator runs as administrator, "
-                 "run FM Tracker as administrator too.", p->exe, p->pid);
+                 "run final7 as administrator too.", p->exe, p->pid);
         return 0;
     }
     BOOL wow = FALSE;

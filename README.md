@@ -1,29 +1,31 @@
-# FM Tracker
+# final7
 
 A live companion window for **Yu-Gi-Oh! Forbidden Memories** (PS1, North American version) running in an emulator on Windows. It reads the game's memory while you play and never writes to it, so your save and the emulator are never changed.
 
-It's a single Windows program written in C. **Download [`FMTracker.exe`](FMTracker.exe) and double-click it.** Nothing to install, no Python, no build step.
+It's a single Windows program written in C. **Download [`final7.exe`](final7.exe) and double-click it.** Nothing to install, no Python, no build step.
 
-![Duel tab](docs/duel-tab.png)
+![Summary tab](docs/summary-tab.png)
 
 ## What it does
 
 | Tab | What you get |
 |---|---|
-| **Duel & Rank** | Your duel rank updates live as you play: the letter (S/A/B/C/D), **POW or TEC**, and the 0–99 score. A breakdown shows every stat (turns, effective attacks, face-downs, fusions, equips, magic, traps, cards used, LP) with its points and how far you are from the next change ("2 more: −4"). Also shows both players' life points, your **chance to win** this duel, and the opponent's drop table for the rank you're on track for. |
-| **Card Overview** | Pick the cards to track. Their deck, trunk and total counts update by themselves whenever a card goes into or out of your deck or chest. Changes flash green or red. Buttons let you track your whole deck or the Exodia pieces in one click. |
-| **Duelists** | All 39 opponents with the game's own Free Duel win/loss record, the duels the tracker has watched (story duels included), win rate, an estimated **chance to beat** each one, and your best rank against them. The current opponent is highlighted. After you've duelled someone once, their deck and drop tables are saved and can be browsed here. |
-| **Passwords** | All 722 cards with their 8-digit password, starchip cost, type, attribute, level and ATK/DEF, plus how many you own. Search, filter to cards you don't own or can afford now, and double-click a row (or press Ctrl+C) to copy the password. |
+| **Summary** | Everything at a glance: your live rank and chance to win during a duel, starchips, overall record, toughest and easiest duelists, your tracked cards, your favorite passwords, and the cards the current opponent can drop at your current rank. |
+| **Duel & Rank** | Your duel rank updates live as you play: the letter (S/A/B/C/D), **POW or TEC**, and the 0–99 score. A breakdown shows every stat (turns, effective attacks, face-downs, fusions, equips, magic, traps, cards used, LP) with its points and how far you are from the next change ("2 more: −4"). |
+| **Card Overview** | Pick the cards to track. Their deck, trunk and total counts update by themselves whenever a card goes into or out of your deck or chest. Changes flash green or red. |
+| **Drops** | Pick any duelist to see their S/A-POW, B/C/D and S/A-TEC drop tables and their deck pool, with the chance for each card and how many you own. Tables are learned the first time you duel someone while attached. During a duel this tab jumps to your opponent and the table your current rank earns. |
+| **Duelists** | All 39 opponents with the game's own Free Duel win/loss record, the duels the tracker has watched (story duels included), win rate, an estimated **chance to beat** each one, and your best rank against them. |
+| **Passwords** | All 722 cards with their 8-digit password, starchip cost, type, attribute, level and ATK/DEF, plus how many you own. **Favorite** a card (click its Fav column, press Space, or use the Favorite button) and it shows up on the Summary tab. Filter to favorites, cards you don't own, or cards you can afford now. Double-click to copy a password. |
 | **Overlay** | A small always-on-top window with just your rank and win chance, for keeping next to the emulator. |
 
 ## Using it
 1. Start your emulator and load Forbidden Memories.
 2. Load your save and get to the map or deck screen.
-3. Start `FMTracker.exe`. It attaches by itself if an emulator is already running. Otherwise pick the emulator from the list (Refresh updates it) and press **Attach**.
+3. Start `final7.exe`. It attaches by itself if an emulator is already running. Otherwise pick the emulator from the list (Refresh updates it) and press **Attach**.
 
-If the emulator runs as administrator, run FM Tracker as administrator too. To look around without the game, press **Demo** (or start it with `FMTracker.exe --demo`). It simulates a game playing endless duels.
+If the emulator runs as administrator, run final7 as administrator too. To look around without the game, press **Demo** (or start it with `final7.exe --demo`). It simulates a game playing endless duels.
 
-Your tracked cards, duel history and learned duelist tables are saved in a `tracker_data` folder next to the exe.
+Your tracked cards, favorites, duel history and learned duelist tables are saved in a `final7_data` folder next to the exe.
 
 ### Supported emulators
 | Emulator | How the PS1 memory is found |
@@ -34,10 +36,10 @@ Your tracked cards, duel history and learned duelist tables are saved in a `trac
 | Mednafen, pSX, PCSX-Redux (64-bit), Xebra | signature |
 | BizHawk and anything else | memory scan for your loaded save |
 
-If a method fails (for example after an emulator update), FM Tracker falls back to scanning memory for your save. That scan takes a few seconds.
+If a method fails (for example after an emulator update), final7 falls back to scanning memory for your save. That scan takes a few seconds.
 
 ## How the numbers work
-* **Rank.** Every duel starts at 50 points. Each stat adds or removes points through a table that the game loads during duels, and FM Tracker reads that same table live. 0–49 is TEC and 50–99 is POW, so a lower score means a better TEC rank. *"Include +2 win bonus"* adds what a normal win by LP is worth (an Exodia win is +40, a deck-out win is −40). With it ticked, the badge shows the rank you'd get if you won right now.
+* **Rank.** Every duel starts at 50 points. Each stat adds or removes points through a table that the game loads during duels, and final7 reads that same table live. 0–49 is TEC and 50–99 is POW, so a lower score means a better TEC rank. *"Include +2 win bonus"* adds what a normal win by LP is worth (an Exodia win is +40, a deck-out win is −40). With it ticked, the badge shows the rank you'd get if you won right now.
 * **Chance to win / beat.** This is an estimate, not a game value. It starts from a rough difficulty guess for each duelist, moves toward your real record as you play more, and adjusts for the ATK of your five strongest deck monsters against the CPU's deck (once seen). During a duel it also follows the life-point gap.
 * **Drops.** These are the opponent's real drop weights out of 2048 for the S/A-POW, B/C/D or S/A-TEC table, matching your current rank.
 

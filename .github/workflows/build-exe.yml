@@ -16,9 +16,9 @@ jobs:
         run: |
           gcc -O2 -Wall -Isrc tests/test_core.c src/game.c src/demo.c src/cards_data.c -lm -o test_core
           ./test_core
-      - name: Build FMTracker.exe
+      - name: Build final7.exe
         run: ./build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: FMTracker-windows
-          path: FMTracker.exe
+          name: final7-windows
+          path: final7.exe

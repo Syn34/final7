@@ -1,4 +1,4 @@
-/* FM Tracker - shared declarations.
+/* final7 - shared declarations.
  *
  * Yu-Gi-Oh! Forbidden Memories (NTSC-U, SLUS-01411) live companion.
  * All RAM offsets are PS1 addresses masked to 0x1FFFFF.

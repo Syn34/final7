@@ -1,6 +1,6 @@
-/* FM Tracker - Win32 user interface.
+/* final7 - Win32 user interface.
  *
- * One window, five pages (Duel & Rank, Card Overview, Duelists, Passwords, Log)
+ * One window, seven pages (Summary, Duel & Rank, Card Overview, Drops, Duelists, Passwords, Log)
  * and an optional always-on-top overlay. Everything refreshes from a 250 ms timer
  * that copies the emulator's PS1 RAM and parses it (see game.c / emu.c).
  */
@@ -51,22 +51,24 @@ enum {
     ID_REFRESH = 101, ID_ATTACH, ID_DETACH, ID_DEMO, ID_OVERLAY,
     ID_TAB0 = 110,
     ID_TRACK = 120, ID_UNTRACK, ID_TRACKDECK, ID_TRACKEXO, ID_CLEAR,
-    ID_PW_UNOWNED = 130, ID_PW_AFFORD,
+    ID_PW_UNOWNED = 130, ID_PW_AFFORD, ID_PW_FAVONLY, ID_PW_FAV,
     ID_CARD_SEARCH = 140, ID_PW_SEARCH,
     ID_EMU = 150, ID_TIER,
     ID_LOG = 160,
     ID_LIST = 200,
 };
-enum { L_RANK, L_DROPS, L_RECENT, L_ALL, L_TRACK, L_DUELISTS, L_DETAIL, L_PW, N_LISTS };
-enum { PG_DUEL, PG_CARDS, PG_DUELISTS, PG_PW, PG_LOG, N_PAGES };
-static const char *const PAGE_NAMES[N_PAGES] = { "Duel & Rank", "Card Overview", "Duelists", "Passwords", "Log" };
+enum { L_RANK, L_DROPS, L_ALL, L_TRACK, L_DUELISTS, L_DETAIL, L_PW, L_SUM_TRACK, L_SUM_FAV, L_DROPDUEL, N_LISTS };
+enum { PG_SUMMARY, PG_DUEL, PG_CARDS, PG_DROPS, PG_DUELISTS, PG_PW, PG_LOG, N_PAGES };
+static const char *const PAGE_NAMES[N_PAGES] = { "Summary", "Duel & Rank", "Card Overview", "Drops", "Duelists",
+                                                 "Passwords", "Log" };
+#define APP_NAME "final7"
 
 #define WM_APP_ATTACHED (WM_APP + 1)
 #define TIMER_POLL 1
 
 /* ---- globals ---------------------------------------------------------------- */
 static HINSTANCE g_inst;
-static HWND g_main, g_pages[N_PAGES], g_rankpanel, g_duelhead, g_overlay;
+static HWND g_main, g_pages[N_PAGES], g_rankpanel, g_duelhead, g_sumcard, g_overlay;
 static HWND g_emu_combo, g_tier_combo, g_card_search, g_pw_search, g_log;
 static HWND g_btn[64];
 static int g_page;
@@ -107,7 +109,9 @@ static int g_pend_ndrops;
 static uint16_t (*g_pools)[4][N_CARDS];   /* [duelist 1..39][deck, sapow, bcd, satec] */
 static uint8_t g_have_pool[N_DUELISTS + 1];
 
-static int g_assume_win = 1, g_pw_unowned, g_pw_afford;
+static int g_assume_win = 1, g_pw_unowned, g_pw_afford, g_pw_favonly;
+static uint8_t g_fav[N_CARDS + 1];
+static int g_favs[N_CARDS], g_nfavs;
 static char g_dir[MAX_PATH];
 
 typedef struct { int fw, fl, sw, sl, w, l, best; double chance; } DStat;
@@ -120,7 +124,7 @@ static const uint16_t *g_detail_pool;
 static int g_detail_duelist;
 
 /* texts painted on pages */
-static char t_tracked_sum[96], t_last_drops[512], t_pw_count[96], t_drop_caption[96], t_detail_title[64],
+static char t_tracked_sum[96], t_last_drops[512], t_pw_count[96], t_drop_caption[96], t_detail_title[64], t_fav_sum[96],
             t_detail_note[200];
 
 #define S(x) MulDiv((x), g_dpi, 96)
@@ -176,6 +180,29 @@ static void load_tracked(void)
     int id;
     while (g_ntracked < N_CARDS && fscanf(f, "%d", &id) == 1)
         if (id >= 1 && id <= N_CARDS) g_tracked[g_ntracked++] = id;
+    fclose(f);
+}
+
+static void save_favs(void)
+{
+    char p[MAX_PATH];
+    data_path(p, "favorites.txt");
+    FILE *f = fopen(p, "w");
+    if (!f) return;
+    for (int id = 1; id <= N_CARDS; id++)
+        if (g_fav[id]) fprintf(f, "%d\n", id);
+    fclose(f);
+}
+
+static void load_favs(void)
+{
+    char p[MAX_PATH];
+    data_path(p, "favorites.txt");
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    int id;
+    while (fscanf(f, "%d", &id) == 1)
+        if (id >= 1 && id <= N_CARDS) g_fav[id] = 1;
     fclose(f);
 }
 
@@ -490,21 +517,6 @@ static void t_drops(int id, int col, char *b, int n) { pool_text(g_drop_pool, id
 static void t_detail(int id, int col, char *b, int n) { pool_text(g_detail_pool, id, col, b, n); }
 static COLORREF c_pool(int id, COLORREF *bg) { (void)bg; return pool_color(id); }
 
-static void t_recent(int i, int col, char *b, int n)
-{
-    Hist *h = &g_hist[i];
-    char lab[8];
-    switch (col) {
-    case 0: snprintf(b, n, "%s", h->when); break;
-    case 1: snprintf(b, n, "%s", duelist_name(h->opp)); break;
-    case 2: snprintf(b, n, "%s", h->win ? "WIN" : "LOSS"); break;
-    case 3: if (h->win) { rank_label(h->score, NULL, NULL, lab); snprintf(b, n, "%s", lab); } else snprintf(b, n, "-"); break;
-    case 4: if (h->win) snprintf(b, n, "%d", h->score); else b[0] = 0; break;
-    default: snprintf(b, n, "%s%s", h->drop ? card_name(h->drop) : "", h->kind == 1 ? " (Exodia)" : (h->kind == 2 ? " (deck out)" : "")); break;
-    }
-}
-static COLORREF c_recent(int i, COLORREF *bg) { (void)bg; return g_hist[i].win ? C_GREEN : C_RED; }
-
 static void t_all(int id, int col, char *b, int n)
 {
     const Card *c = &CARDS[id - 1];
@@ -581,15 +593,16 @@ static void t_pw(int id, int col, char *b, int n)
 {
     const Card *c = &CARDS[id - 1];
     switch (col) {
-    case 0: snprintf(b, n, "%d", id); break;
-    case 1: snprintf(b, n, "%s", c->name); break;
-    case 2: snprintf(b, n, "%s", c->password[0] ? c->password : "-"); break;
-    case 3: if (c->cost >= 0) snprintf(b, n, "%d", c->cost); else snprintf(b, n, "-"); break;
-    case 4: snprintf(b, n, "%s", c->type); break;
-    case 5: snprintf(b, n, "%s", c->attr); break;
-    case 6: if (c->level) snprintf(b, n, "%d", c->level); else b[0] = 0; break;
-    case 7: snprintf(b, n, "%d", c->atk); break;
-    case 8: snprintf(b, n, "%d", c->def); break;
+    case 0: snprintf(b, n, "%s", g_fav[id] ? "*" : ""); break;
+    case 1: snprintf(b, n, "%d", id); break;
+    case 2: snprintf(b, n, "%s", c->name); break;
+    case 3: snprintf(b, n, "%s", c->password[0] ? c->password : "-"); break;
+    case 4: if (c->cost >= 0) snprintf(b, n, "%d", c->cost); else snprintf(b, n, "-"); break;
+    case 5: snprintf(b, n, "%s", c->type); break;
+    case 6: snprintf(b, n, "%s", c->attr); break;
+    case 7: if (c->level) snprintf(b, n, "%d", c->level); else b[0] = 0; break;
+    case 8: snprintf(b, n, "%d", c->atk); break;
+    case 9: snprintf(b, n, "%d", c->def); break;
     default: owned_str(id, b, n); break;
     }
 }
@@ -597,9 +610,53 @@ static COLORREF c_pw(int id, COLORREF *bg)
 {
     (void)bg;
     const Card *c = &CARDS[id - 1];
+    if (g_fav[id]) return C_GOLD;
     if (c->cost < 0) return C_MUTED;
     if (snap_ok() && (uint32_t)c->cost <= g_snap.starchips) return C_GREEN;
     return C_TEXT;
+}
+
+/* summary lists */
+static void t_sumtrack(int id, int col, char *b, int n)
+{
+    static const int map[] = { 1, 2, 3, 4, 5 };
+    t_track(id, map[col], b, n);
+}
+static void t_sumfav(int id, int col, char *b, int n)
+{
+    const Card *c = &CARDS[id - 1];
+    switch (col) {
+    case 0: snprintf(b, n, "%s", c->name); break;
+    case 1: snprintf(b, n, "%s", c->password[0] ? c->password : "-"); break;
+    case 2: if (c->cost >= 0) snprintf(b, n, "%d", c->cost); else snprintf(b, n, "-"); break;
+    default: owned_str(id, b, n); break;
+    }
+}
+static COLORREF c_sumfav(int id, COLORREF *bg)
+{
+    (void)bg;
+    const Card *c = &CARDS[id - 1];
+    if (c->cost < 0) return C_MUTED;
+    if (snap_ok() && (uint32_t)c->cost <= g_snap.starchips) return C_GREEN;
+    return C_TEXT;
+}
+
+/* drops tab duelist picker */
+static void t_dropduel(int d, int col, char *b, int n)
+{
+    switch (col) {
+    case 0: snprintf(b, n, "%d", d); break;
+    case 1: snprintf(b, n, "%s", DUELISTS[d - 1]); break;
+    default: snprintf(b, n, "%s", g_have_pool[d] ? "learned" : "-"); break;
+    }
+}
+static COLORREF c_dropduel(int d, COLORREF *bg)
+{
+    if (duel_active() && g_tr.opponent == d) {
+        *bg = C_CURBG;
+        return RGB(0xff, 0xe6, 0xa8);
+    }
+    return g_have_pool[d] ? C_TEXT : C_MUTED;
 }
 
 /* ---- list (re)builders -------------------------------------------------------- */
@@ -629,6 +686,7 @@ static void rebuild_all_cards(void)
 static void rebuild_tracked(void)
 {
     vlist_set_rows(&g_lists[L_TRACK], g_tracked, g_ntracked);
+    vlist_set_rows(&g_lists[L_SUM_TRACK], g_tracked, g_ntracked);
     int copies = 0;
     if (snap_ok())
         for (int i = 0; i < g_ntracked; i++) copies += owned_total(&g_snap, g_tracked[i]);
@@ -649,25 +707,33 @@ static void rebuild_pw(void)
             continue;
         if (g_pw_unowned && snap_ok() && owned_total(&g_snap, id) > 0) continue;
         if (g_pw_afford && !(snap_ok() && c->cost >= 0 && (uint32_t)c->cost <= g_snap.starchips)) continue;
+        if (g_pw_favonly && !g_fav[id]) continue;
         items[n++] = id;
     }
     vlist_set_rows(&g_lists[L_PW], items, n);
-    snprintf(t_pw_count, sizeof t_pw_count, "%d cards  |  green = affordable now", n);
+    snprintf(t_pw_count, sizeof t_pw_count, "%d cards  |  gold = favorite, green = affordable", n);
     InvalidateRect(g_pages[PG_PW], NULL, TRUE);
 }
 
-static void rebuild_recent(void)
+static void rebuild_favs(void)
 {
-    static int *items;
-    static int cap;
-    if (cap < g_nhist) {
-        int *n = realloc(items, (g_nhist + 64) * sizeof(int));
-        if (!n) return;
-        items = n;
-        cap = g_nhist + 64;
-    }
-    for (int i = 0; i < g_nhist; i++) items[i] = g_nhist - 1 - i;
-    vlist_set_rows(&g_lists[L_RECENT], items, g_nhist);
+    g_nfavs = 0;
+    for (int id = 1; id <= N_CARDS; id++)
+        if (g_fav[id]) g_favs[g_nfavs++] = id;
+    vlist_set_rows(&g_lists[L_SUM_FAV], g_favs, g_nfavs);
+    snprintf(t_fav_sum, sizeof t_fav_sum, "%d favorite%s", g_nfavs, g_nfavs == 1 ? "" : "s");
+    InvalidateRect(g_pages[PG_SUMMARY], NULL, TRUE);
+}
+
+static void toggle_fav(int id)
+{
+    if (id < 1 || id > N_CARDS) return;
+    g_fav[id] = !g_fav[id];
+    save_favs();
+    rebuild_favs();
+    if (g_pw_favonly) rebuild_pw();
+    else InvalidateRect(g_lists[L_PW].hwnd, NULL, FALSE);
+    logf_("%s %s favorites.", CARDS[id - 1].name, g_fav[id] ? "added to" : "removed from");
 }
 
 static void fill_pool_list(VList *v, const uint16_t *pool)
@@ -689,7 +755,7 @@ static void fill_pool_list(VList *v, const uint16_t *pool)
 
 static void fill_detail(void)
 {
-    int d = vlist_selected(&g_lists[L_DUELISTS]);
+    int d = vlist_selected(&g_lists[L_DROPDUEL]);
     if (d < 1) return;
     g_detail_duelist = d;
     snprintf(t_detail_title, sizeof t_detail_title, "%s", DUELISTS[d - 1]);
@@ -703,9 +769,16 @@ static void fill_detail(void)
         g_detail_pool = tier == 3 ? g_pools[d][0] : g_pools[d][tier + 1];
         snprintf(t_detail_note, sizeof t_detail_note, "%s", tier == 3 ? "Chance of each card in the CPU's deck draw." :
                  "Gold = a card you don't own yet.");
+        if (duel_active() && g_tr.opponent == d) {
+            char lab[8];
+            rank_label(g_rank_score, NULL, NULL, lab);
+            size_t l = strlen(t_detail_note);
+            snprintf(t_detail_note + l, sizeof t_detail_note - l, "  Your rank right now: %s (%s table).", lab,
+                     DROP_TIER_NAMES[drop_tier(g_rank_score)]);
+        }
     }
     fill_pool_list(&g_lists[L_DETAIL], g_detail_pool);
-    InvalidateRect(g_pages[PG_DUELISTS], NULL, TRUE);
+    InvalidateRect(g_pages[PG_DROPS], NULL, TRUE);
 }
 
 /* ---- duelist stats / win chance ------------------------------------------------- */
@@ -763,10 +836,25 @@ static void update_dstats(int force)
 }
 
 /* ---- duel events ---------------------------------------------------------------- */
+static void select_drop_duelist(int d, int tier)
+{
+    VList *v = &g_lists[L_DROPDUEL];
+    if (tier >= 0) SendMessage(g_tier_combo, CB_SETCURSEL, tier, 0);
+    for (int i = 0; i < v->nrows; i++)
+        if (v->rows[i] == d) {
+            ListView_SetItemState(v->hwnd, -1, 0, LVIS_SELECTED);
+            ListView_SetItemState(v->hwnd, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(v->hwnd, i, FALSE);
+            break;
+        }
+    fill_detail();
+}
+
 static void on_event(const DuelEvent *ev)
 {
     if (ev->type == EV_START) {
         logf_("Duel started vs %s.", duelist_name(ev->opponent));
+        InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
     } else if (ev->type == EV_ABORT) {
         logf_("Duel vs %s left without a result (reset or state load).", duelist_name(ev->opponent));
     } else if (ev->type == EV_END) {
@@ -793,7 +881,6 @@ static void on_event(const DuelEvent *ev)
         if (ev->win) logf_("Duel vs %s: WIN - %s (%d)", duelist_name(ev->opponent), lab, score);
         else logf_("Duel vs %s: LOSS", duelist_name(ev->opponent));
         save_history();
-        rebuild_recent();
         update_dstats(1);
     }
 }
@@ -813,7 +900,7 @@ static void follow_pending(void)
         h->free_duel = 1;
         changed = 1;
     }
-    if (changed) { save_history(); InvalidateRect(g_lists[L_RECENT].hwnd, NULL, FALSE); }
+    if (changed) save_history();
     if (now_ms() - g_pend_t > 90000 || (h->drop && h->free_duel)) g_pend = -1;
 }
 
@@ -821,6 +908,7 @@ static void cache_pools(void)
 {
     int d = g_snap.opponent;
     if (d < 1 || d > N_DUELISTS || g_have_pool[d] || !g_snap.pools_valid) return;
+    InvalidateRect(g_lists[L_DROPDUEL].hwnd, NULL, FALSE);
     memcpy(g_pools[d][0], g_snap.deck_pool, sizeof g_pools[d][0]);
     for (int t = 0; t < 3; t++) memcpy(g_pools[d][t + 1], g_snap.drop_pool[t], sizeof g_pools[d][0]);
     g_have_pool[d] = 1;
@@ -888,9 +976,11 @@ static void process_snapshot(void)
         g_drop_opp = opp;
         if (pool) { memcpy(shown, pool, sizeof shown); g_drop_pool = shown; } else g_drop_pool = NULL;
         fill_pool_list(&g_lists[L_DROPS], g_drop_pool);
-        if (pool) snprintf(t_drop_caption, sizeof t_drop_caption, "%s table  |  gold = you don't own it", DROP_TIER_NAMES[tier]);
-        else snprintf(t_drop_caption, sizeof t_drop_caption, "Shown during a duel.");
-        InvalidateRect(g_pages[PG_DUEL], NULL, TRUE);
+        if (pool) snprintf(t_drop_caption, sizeof t_drop_caption, "%s vs %s  |  gold = you don't own it",
+                           DROP_TIER_NAMES[tier], duelist_name(opp));
+        else snprintf(t_drop_caption, sizeof t_drop_caption, "Shown during a duel. Browse any duelist on the Drops tab.");
+        InvalidateRect(g_pages[PG_SUMMARY], NULL, TRUE);
+        if (opp > 0) select_drop_duelist(opp, tier);   /* Drops tab follows the duel */
     }
 
     update_dstats(0);
@@ -907,7 +997,9 @@ static void process_snapshot(void)
         if (IsWindowVisible(g_lists[i].hwnd)) InvalidateRect(g_lists[i].hwnd, NULL, FALSE);
     InvalidateRect(g_rankpanel, NULL, FALSE);
     InvalidateRect(g_duelhead, NULL, FALSE);
+    InvalidateRect(g_sumcard, NULL, FALSE);
     if (g_overlay) InvalidateRect(g_overlay, NULL, FALSE);
+    if (IsWindowVisible(g_pages[PG_SUMMARY])) InvalidateRect(g_pages[PG_SUMMARY], NULL, FALSE);
     if (IsWindowVisible(g_pages[PG_CARDS])) InvalidateRect(g_pages[PG_CARDS], NULL, FALSE);
     RECT r = { 0, S(46), S(2000), S(96) };
     InvalidateRect(g_main, &r, FALSE);
@@ -924,6 +1016,7 @@ static void detach_all(void)
     InvalidateRect(g_main, NULL, FALSE);
     InvalidateRect(g_rankpanel, NULL, FALSE);
     InvalidateRect(g_duelhead, NULL, FALSE);
+    InvalidateRect(g_sumcard, NULL, FALSE);
 }
 
 static void on_tick(void)
@@ -999,7 +1092,7 @@ static void start_attach(int quiet)
         if (!quiet)
             MessageBox(g_main, "No supported emulator is running.\n\nSupported: DuckStation, ePSXe, RetroArch "
                        "(SwanStation / Beetle PSX / PCSX ReARMed), Mednafen, pSX, PCSX-Redux, Xebra, BizHawk "
-                       "(memory scan).", "FM Tracker", MB_ICONINFORMATION);
+                       "(memory scan).", APP_NAME, MB_ICONINFORMATION);
         return;
     }
     int i = (int)SendMessage(g_emu_combo, CB_GETCURSEL, 0, 0);
@@ -1022,7 +1115,7 @@ static void on_attached(int ok)
     if (!ok) {
         set_status("Not attached", C_RED);
         logf_("%s", g_attach_err);
-        if (!g_attach_quiet) MessageBox(g_main, g_attach_err, "FM Tracker", MB_ICONWARNING);
+        if (!g_attach_quiet) MessageBox(g_main, g_attach_err, APP_NAME, MB_ICONWARNING);
         return;
     }
     g_att = g_pending_att;
@@ -1070,9 +1163,9 @@ static void untrack_selected(void)
     InvalidateRect(g_pages[PG_CARDS], NULL, TRUE);
 }
 
-static void copy_password(void)
+static void copy_password(int which)
 {
-    int id = vlist_selected(&g_lists[L_PW]);
+    int id = vlist_selected(&g_lists[which]);
     if (id < 1 || !CARDS[id - 1].password[0]) return;
     const char *pw = CARDS[id - 1].password;
     if (OpenClipboard(g_main)) {
@@ -1145,8 +1238,8 @@ static void paint_main(HWND h)
     fill(dc, 0, 0, W, H, C_BG);
 
     /* title + status */
-    text_at(dc, S(16), S(8), "FM Tracker", f_title, C_GOLD);
-    int tx = S(16) + text_w(dc, "FM Tracker", f_title) + S(18);
+    text_at(dc, S(16), S(8), APP_NAME, f_title, C_GOLD);
+    int tx = S(16) + text_w(dc, APP_NAME, f_title) + S(18);
     HBRUSH db = CreateSolidBrush(g_status_color);
     HGDIOBJ obr = SelectObject(dc, db);
     HGDIOBJ open_ = SelectObject(dc, GetStockObject(NULL_PEN));
@@ -1158,25 +1251,10 @@ static void paint_main(HWND h)
     text_rect(dc, sr, g_status, f_ui, C_TEXT, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
     /* stats row */
-    const char *labels[5] = { "STARCHIPS", "DECK", "TRUNK CARDS", "UNIQUE OWNED", "OPPONENT" };
-    char vals[5][64];
-    for (int i = 0; i < 5; i++) snprintf(vals[i], sizeof vals[i], "-");
-    if (snap_ok()) {
-        snprintf(vals[0], 64, "%u", g_snap.starchips);
-        snprintf(vals[1], 64, "40 cards");
-        int trunk = 0, uniq = 0;
-        for (int id = 1; id <= N_CARDS; id++) { trunk += g_snap.trunk[id]; if (owned_total(&g_snap, id)) uniq++; }
-        snprintf(vals[2], 64, "%d", trunk);
-        snprintf(vals[3], 64, "%d / %d", uniq, N_CARDS);
-        if (duel_active()) snprintf(vals[4], 64, "%s", duelist_name(g_tr.opponent));
-    }
-    int x = S(16);
-    for (int i = 0; i < 5; i++) {
-        text_at(dc, x, S(48), labels[i], f_smallb, C_MUTED);
-        text_at(dc, x, S(64), vals[i], f_med, C_TEXT);
-        int w1 = text_w(dc, labels[i], f_smallb), w2 = text_w(dc, vals[i], f_med);
-        x += (w1 > w2 ? w1 : w2) + S(30);
-    }
+    char chips[32] = "-";
+    if (snap_ok()) snprintf(chips, sizeof chips, "%u", g_snap.starchips);
+    text_at(dc, S(16), S(48), "STARCHIPS", f_smallb, C_MUTED);
+    text_at(dc, S(16), S(64), chips, f_med, C_TEXT);
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
@@ -1213,10 +1291,6 @@ static void paint_rankpanel(HWND h)
         show = 1;
         score = g_rank_score;
         snprintf(sub, sizeof sub, "score %d%s", score, g_snap.table_live ? "" : " (est.)");
-    } else if (g_nhist && g_hist[g_nhist - 1].win && g_mode) {
-        show = 1;
-        score = g_hist[g_nhist - 1].score;
-        snprintf(sub, sizeof sub, "final score %d (last duel)", score);
     }
     char letter = '-';
     int pow = 0;
@@ -1290,22 +1364,6 @@ static void paint_rankpanel(HWND h)
     EndPaint(h, &ps);
 }
 
-static void paint_lp(HDC dc, int x, int y, int w, const char *label, int lp, int start, COLORREF col)
-{
-    text_at(dc, x, y + S(10), label, f_smallb, C_MUTED);
-    char v[16] = "-";
-    if (start > 0) snprintf(v, sizeof v, "%d", lp < 0 ? 0 : lp);
-    RECT r = { x, y, x + w, y + S(32) };
-    text_rect(dc, r, v, f_lpnum, C_TEXT, DT_RIGHT | DT_SINGLELINE | DT_BOTTOM);
-    fill(dc, x, y + S(36), w, S(9), C_PANEL2);
-    if (start > 0) {
-        double fr = lp / (double)start;
-        if (fr < 0) fr = 0;
-        if (fr > 1) fr = 1;
-        fill(dc, x, y + S(36), (int)(w * fr), S(9), col);
-    }
-}
-
 static void paint_duelhead(HWND h)
 {
     PAINTSTRUCT ps;
@@ -1319,20 +1377,101 @@ static void paint_duelhead(HWND h)
     fill(dc, 0, 0, W, H, C_PANEL);
     char title[128];
     if (duel_active()) snprintf(title, sizeof title, "Dueling %s", duelist_name(g_tr.opponent));
-    else if (g_mode && g_nhist && g_hist[g_nhist - 1].win)
-        snprintf(title, sizeof title, "Last duel: beat %s - waiting for the next one", duelist_name(g_hist[g_nhist - 1].opp));
     else snprintf(title, sizeof title, "No duel in progress - waiting for the next one");
     text_at(dc, 0, 0, title, f_med, C_GOLD);
-    int half = (W - S(20)) / 2;
-    int act = duel_active();
-    paint_lp(dc, 0, S(30), half, "YOU", act ? g_snap.you.lp : 0, act ? g_snap.you.start_lp : 0, C_GREEN);
-    paint_lp(dc, half + S(20), S(30), half, "OPPONENT", act ? g_snap.cpu.lp : 0,
-             act ? (g_snap.cpu.start_lp ? g_snap.cpu.start_lp : g_snap.you.start_lp) : 0, C_RED);
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
     DeleteObject(bm);
     DeleteDC(dc);
     EndPaint(h, &ps);
+}
+
+/* ---- summary card ------------------------------------------------------------------------ */
+static void paint_sumcard(HWND h)
+{
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    int W = rc.right, H = rc.bottom;
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bm = CreateCompatibleBitmap(wdc, W, H);
+    HGDIOBJ ob = SelectObject(dc, bm);
+    fill(dc, 0, 0, W, H, C_PANEL2);
+    frame(dc, rc, C_LINE);
+    int x = S(16), y = S(12);
+    text_at(dc, x, y, "RIGHT NOW", f_smallb, C_MUTED);
+    y += S(20);
+    if (duel_active()) {
+        char lab[8], letter, line[96], pct[16], note[200];
+        int pow;
+        rank_label(g_rank_score, &letter, &pow, lab);
+        snprintf(line, sizeof line, "Dueling %s", duelist_name(g_tr.opponent));
+        text_at(dc, x, y, line, f_bold, C_GOLD);
+        y += S(26);
+        RECT lr = { x, y, x + S(150), y + S(60) };
+        text_rect(dc, lr, lab, f_big, letter_color(letter), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        double p = chance_for(g_tr.opponent, 1, note, sizeof note);
+        snprintf(pct, sizeof pct, "%.0f%%", p * 100);
+        RECT pr = { W / 2, y, W - x, y + S(60) };
+        text_rect(dc, pr, pct, f_big, p >= 0.6 ? C_GREEN : (p >= 0.35 ? C_GOLD : C_RED), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        y += S(60);
+        snprintf(line, sizeof line, "rank score %d", g_rank_score);
+        text_at(dc, x, y, line, f_small, C_MUTED);
+        RECT cr = { W / 2, y, W - x, y + S(18) };
+        text_rect(dc, cr, "chance to win", f_small, C_MUTED, DT_RIGHT | DT_SINGLELINE);
+        y += S(24);
+    } else {
+        text_at(dc, x, y, g_mode ? "No duel in progress" : "Not attached", f_bold, C_GOLD);
+        y += S(26);
+        RECT nr = { x, y, W - x, y + S(80) };
+        text_rect(dc, nr, g_mode ? "Your live rank, chance to win and possible drops show up here when a duel starts."
+                                 : "Start your emulator, load your save and press Attach (or Demo to try it).",
+                  f_small, C_MUTED, DT_WORDBREAK);
+        y += S(110);
+    }
+    fill(dc, x, y, W - 2 * x, 1, C_LINE);
+    y += S(12);
+    /* totals */
+    int tw = 0, tl = 0, hard = 0, easy = 0;
+    for (int d = 1; d <= N_DUELISTS; d++) {
+        tw += g_dstat[d].w;
+        tl += g_dstat[d].l;
+        if (!hard || g_dstat[d].chance < g_dstat[hard].chance) hard = d;
+        if (!easy || g_dstat[d].chance > g_dstat[easy].chance) easy = d;
+    }
+    char v[96];
+    struct { const char *k; char val[96]; } rows[5];
+    int nr = 0;
+    snprintf(rows[nr].val, 96, "%s", snap_ok() ? (snprintf(v, sizeof v, "%u", g_snap.starchips), v) : "-");
+    rows[nr++].k = "Starchips";
+    if (tw + tl) snprintf(rows[nr].val, 96, "%d-%d  (%.0f%%)", tw, tl, 100.0 * tw / (tw + tl));
+    else snprintf(rows[nr].val, 96, "-");
+    rows[nr++].k = "Overall record";
+    snprintf(rows[nr].val, 96, "%s (%.0f%%)", duelist_name(hard), g_dstat[hard].chance * 100);
+    rows[nr++].k = "Toughest duelist";
+    snprintf(rows[nr].val, 96, "%s (%.0f%%)", duelist_name(easy), g_dstat[easy].chance * 100);
+    rows[nr++].k = "Easiest duelist";
+    snprintf(rows[nr].val, 96, "%d tracked  |  %d favorites", g_ntracked, g_nfavs);
+    rows[nr++].k = "Watching";
+    for (int i = 0; i < nr && y + S(20) < H; i++) {
+        text_at(dc, x, y, rows[i].k, f_small, C_MUTED);
+        RECT r = { x + S(110), y, W - x, y + S(20) };
+        text_rect(dc, r, rows[i].val, f_ui, C_TEXT, DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += S(22);
+    }
+    BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, ob);
+    DeleteObject(bm);
+    DeleteDC(dc);
+    EndPaint(h, &ps);
+}
+
+static LRESULT CALLBACK sum_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_PAINT) { paint_sumcard(h); return 0; }
+    if (m == WM_ERASEBKGND) return 1;
+    return DefWindowProc(h, m, w, l);
 }
 
 /* ---- overlay ------------------------------------------------------------------------ */
@@ -1386,7 +1525,7 @@ static void toggle_overlay(void)
     if (g_overlay) { DestroyWindow(g_overlay); return; }
     RECT r = { 0, 0, S(320), S(96) };
     AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW);
-    g_overlay = CreateWindowEx(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "FMOverlay", "FM Rank",
+    g_overlay = CreateWindowEx(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "FMOverlay", APP_NAME,
                                WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
                                r.right - r.left, r.bottom - r.top, NULL, NULL, g_inst, NULL);
     InvalidateRect(g_btn[ID_OVERLAY - 100], NULL, FALSE);
@@ -1428,7 +1567,7 @@ static void layout(void)
     }
     x -= S(250);
     place(g_emu_combo, x, y + S(1), S(250), S(300));
-    for (int i = 0; i < N_PAGES; i++) place(g_btn[ID_TAB0 - 100 + i], S(12) + i * S(140), S(98), S(136), S(32));
+    for (int i = 0; i < N_PAGES; i++) place(g_btn[ID_TAB0 - 100 + i], S(12) + i * S(128), S(98), S(124), S(32));
 
     int py = S(132), pw = W - S(20), ph = H - py - S(10);
     for (int i = 0; i < N_PAGES; i++) place(g_pages[i], S(10), py, pw, ph);
@@ -1436,23 +1575,32 @@ static void layout(void)
     H = ph;
     memset(g_nptext, 0, sizeof g_nptext);
 
+    /* summary page */
+    {
+        int lw = S(330), x2 = S(12) + lw + S(14), w2 = W - x2 - S(12);
+        place(g_sumcard, S(12), S(12), lw, S(316));
+        ptext(PG_SUMMARY, S(12), S(340), lw, S(22), "Possible drops right now", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_lists[L_DROPS].hwnd, S(12), S(366), lw, H - S(366) - S(52));
+        ptext(PG_SUMMARY, S(12), H - S(46), lw, S(42), NULL, t_drop_caption, &f_small, C_MUTED, DT_WORDBREAK);
+        int half = (H - S(36) - S(60)) / 2;
+        ptext(PG_SUMMARY, x2, S(10), w2, S(22), "Tracked cards", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, x2 + w2 / 2, S(12), w2 - w2 / 2, S(22), NULL, t_tracked_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
+        place(g_lists[L_SUM_TRACK].hwnd, x2, S(36), w2, half);
+        int fy = S(36) + half + S(14);
+        ptext(PG_SUMMARY, x2, fy, w2, S(22), "Favorite passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        ptext(PG_SUMMARY, x2 + w2 / 2, fy + S(2), w2 - w2 / 2, S(22), NULL, t_fav_sum, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
+        place(g_lists[L_SUM_FAV].hwnd, x2, fy + S(26), w2, H - fy - S(26) - S(30));
+        ptext(PG_SUMMARY, x2, H - S(24), w2, S(18), "Favorite passwords on the Passwords tab. Double-click one here to "
+              "copy it. Green = you can afford it.", NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
     /* duel page */
     {
         int bw = S(270);
         place(g_rankpanel, S(12), S(12), bw, H - S(24));
         int rx = S(12) + bw + S(14), rw = W - rx - S(12);
-        place(g_duelhead, rx, S(12), rw, S(80));
-        int lw = rw * 58 / 100, dx = rx + lw + S(12), dw = rw - lw - S(12);
-        int ly = S(128), lh = S(282);
-        if (lh > H - ly - S(150)) lh = H - ly - S(150);
-        ptext(PG_DUEL, rx, S(102), lw, S(22), "Rank breakdown", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        ptext(PG_DUEL, dx, S(102), dw, S(22), "Possible drops at this rank", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_lists[L_RANK].hwnd, rx, ly, lw, lh);
-        place(g_lists[L_DROPS].hwnd, dx, ly, dw, lh);
-        ptext(PG_DUEL, dx, ly + lh + S(4), dw, S(18), NULL, t_drop_caption, &f_small, C_MUTED, DT_SINGLELINE);
-        int ry = ly + lh + S(28);
-        ptext(PG_DUEL, rx, ry, rw, S(22), "Recent duels", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_lists[L_RECENT].hwnd, rx, ry + S(24), rw, H - ry - S(36));
+        place(g_duelhead, rx, S(12), rw, S(34));
+        ptext(PG_DUEL, rx, S(58), rw, S(22), "Rank breakdown", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_lists[L_RANK].hwnd, rx, S(84), rw, H - S(84) - S(12));
     }
     /* cards page */
     {
@@ -1479,31 +1627,37 @@ static void layout(void)
         ptext(PG_CARDS, x3, H - S(76), w3, S(22), "Last cards dropped", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
         ptext(PG_CARDS, x3, H - S(52), w3, S(46), NULL, t_last_drops, &f_ui, C_TEXT, DT_WORDBREAK | DT_END_ELLIPSIS);
     }
+    /* drops page */
+    {
+        int lw = S(320), x2 = S(12) + lw + S(14), w2 = W - x2 - S(12);
+        ptext(PG_DROPS, S(12), S(10), lw, S(22), "Duelists", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_lists[L_DROPDUEL].hwnd, S(12), S(38), lw, H - S(38) - S(12));
+        ptext(PG_DROPS, x2, S(10), w2, S(22), NULL, t_detail_title, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_tier_combo, x2, S(38), S(190), S(200));
+        place(g_lists[L_DETAIL].hwnd, x2, S(74), w2, H - S(74) - S(52));
+        ptext(PG_DROPS, x2, H - S(46), w2, S(42), NULL, t_detail_note, &f_small, C_MUTED, DT_WORDBREAK);
+    }
     /* duelists page */
     {
-        int lw = (W - S(36)) * 62 / 100, x2 = S(12) + lw + S(12), w2 = W - x2 - S(12);
-        ptext(PG_DUELISTS, S(12), S(10), lw, S(22), "Chance to beat each duelist", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_lists[L_DUELISTS].hwnd, S(12), S(38), lw, H - S(38) - S(66));
-        ptext(PG_DUELISTS, S(12), H - S(60), lw, S(56),
+        ptext(PG_DUELISTS, S(12), S(10), W - S(24), S(22), "Chance to beat each duelist", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
+        place(g_lists[L_DUELISTS].hwnd, S(12), S(38), W - S(24), H - S(38) - S(52));
+        ptext(PG_DUELISTS, S(12), H - S(46), W - S(24), S(42),
               "Free W/L = the game's own Free Duel record. Seen = duels this tracker watched (story included). "
               "Chance to beat blends your record, a difficulty guess and your deck's strength vs. the CPU's deck; "
               "during a duel it also follows life points.", NULL, &f_small, C_MUTED, DT_WORDBREAK);
-        ptext(PG_DUELISTS, x2, S(10), w2, S(22), NULL, t_detail_title, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_tier_combo, x2, S(38), S(170), S(200));
-        place(g_lists[L_DETAIL].hwnd, x2, S(74), w2, H - S(74) - S(52));
-        ptext(PG_DUELISTS, x2, H - S(46), w2, S(42), NULL, t_detail_note, &f_small, C_MUTED, DT_WORDBREAK);
     }
     /* passwords page */
     {
         ptext(PG_PW, S(12), S(14), S(170), S(22), "All card passwords", NULL, &f_bold, C_GOLD, DT_SINGLELINE);
-        place(g_pw_search, S(194), S(14), S(252), S(22));
-        SetRect(&g_edit_frames[1], S(190), S(10), S(450), S(40));
-        place(g_btn[ID_PW_UNOWNED - 100], S(462), S(10), S(120), S(30));
-        place(g_btn[ID_PW_AFFORD - 100], S(590), S(10), S(150), S(30));
-        ptext(PG_PW, S(750), S(16), W - S(762), S(22), NULL, t_pw_count, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
-        ptext(PG_PW, S(12), S(46), W - S(24), S(18), "Enter these at the in-game Password screen (cost in starchips; "
-              "- = can't be bought). Double-click a row to copy the password.", NULL, &f_small, C_MUTED,
-              DT_SINGLELINE | DT_END_ELLIPSIS);
+        place(g_pw_search, S(194), S(14), S(232), S(22));
+        SetRect(&g_edit_frames[1], S(190), S(10), S(430), S(40));
+        place(g_btn[ID_PW_UNOWNED - 100], S(442), S(10), S(110), S(30));
+        place(g_btn[ID_PW_AFFORD - 100], S(556), S(10), S(140), S(30));
+        place(g_btn[ID_PW_FAVONLY - 100], S(700), S(10), S(130), S(30));
+        place(g_btn[ID_PW_FAV - 100], W - S(12) - S(150), S(10), S(150), S(30));
+        ptext(PG_PW, S(12), S(46), W / 2, S(18), "Enter at the in-game Password screen. Double-click copies; "
+              "Space or the Fav column stars a card.", NULL, &f_small, C_MUTED, DT_SINGLELINE | DT_END_ELLIPSIS);
+        ptext(PG_PW, W / 2, S(46), W / 2 - S(12), S(18), NULL, t_pw_count, &f_small, C_MUTED, DT_SINGLELINE | DT_RIGHT);
         place(g_lists[L_PW].hwnd, S(12), S(70), W - S(24), H - S(82));
     }
     place(g_log, S(12), S(12), W - S(24), H - S(24));
@@ -1532,17 +1686,9 @@ static void show_page(int p)
     g_page = p;
     for (int i = 0; i < N_PAGES; i++) ShowWindow(g_pages[i], i == p ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < N_PAGES; i++) InvalidateRect(g_btn[ID_TAB0 - 100 + i], NULL, FALSE);
-    if (p == PG_DUELISTS) {
-        update_dstats(1);
-        VList *v = &g_lists[L_DUELISTS];
-        int want = duel_active() ? g_tr.opponent : (vlist_selected(v) > 0 ? -1 : 1);
-        for (int i = 0; want > 0 && i < v->nrows; i++)
-            if (v->rows[i] == want) {
-                ListView_SetItemState(v->hwnd, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(v->hwnd, i, FALSE);
-                break;
-            }
-    }
+    if (p == PG_DUELISTS) update_dstats(1);
+    if (p == PG_DROPS && vlist_selected(&g_lists[L_DROPDUEL]) < 1)
+        select_drop_duelist(duel_active() ? g_tr.opponent : 1, duel_active() ? drop_tier(g_rank_score) : -1);
 }
 
 /* ---- pages ------------------------------------------------------------------------------ */
@@ -1637,8 +1783,8 @@ static void draw_button(DRAWITEMSTRUCT *d)
         text_rect(dc, t, text, f_bold, sel ? C_GOLD : C_MUTED, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         return;
     }
-    if (id == ID_PW_UNOWNED || id == ID_PW_AFFORD) {
-        int on = id == ID_PW_UNOWNED ? g_pw_unowned : g_pw_afford;
+    if (id == ID_PW_UNOWNED || id == ID_PW_AFFORD || id == ID_PW_FAVONLY) {
+        int on = id == ID_PW_UNOWNED ? g_pw_unowned : (id == ID_PW_AFFORD ? g_pw_afford : g_pw_favonly);
         fill(dc, r.left, r.top, r.right - r.left, r.bottom - r.top, C_PANEL);
         int cy = (r.top + r.bottom) / 2;
         RECT box = { r.left + S(4), cy - S(7), r.left + S(18), cy + S(7) };
@@ -1718,18 +1864,24 @@ static LRESULT on_list_notify(NMHDR *nh)
     case NM_DBLCLK:
         if (which == L_ALL) { int id = vlist_selected(v); if (id > 0) track_ids(&id, 1); }
         else if (which == L_TRACK) untrack_selected();
-        else if (which == L_PW) copy_password();
+        else if (which == L_PW || which == L_SUM_FAV) copy_password(which);
         return 0;
+    case NM_CLICK: {
+        NMITEMACTIVATE *ia = (NMITEMACTIVATE *)nh;
+        if (which == L_PW && ia->iSubItem == 0 && ia->iItem >= 0 && ia->iItem < v->nrows) toggle_fav(v->rows[ia->iItem]);
+        return 0;
+    }
     case LVN_ITEMCHANGED: {
         NMLISTVIEW *lv = (NMLISTVIEW *)nh;
-        if (which == L_DUELISTS && (lv->uNewState & LVIS_SELECTED)) fill_detail();
+        if (which == L_DROPDUEL && (lv->uNewState & LVIS_SELECTED)) fill_detail();
         return 0;
     }
     case LVN_KEYDOWN: {
         NMLVKEYDOWN *k = (NMLVKEYDOWN *)nh;
         if (which == L_TRACK && k->wVKey == VK_DELETE) untrack_selected();
         if (which == L_ALL && k->wVKey == VK_RETURN) { int id = vlist_selected(v); if (id > 0) track_ids(&id, 1); }
-        if (which == L_PW && k->wVKey == 'C' && (GetKeyState(VK_CONTROL) & 0x8000)) copy_password();
+        if ((which == L_PW || which == L_SUM_FAV) && k->wVKey == 'C' && (GetKeyState(VK_CONTROL) & 0x8000)) copy_password(which);
+        if (which == L_PW && k->wVKey == VK_SPACE) toggle_fav(vlist_selected(v));
         return 0;
     }
     }
@@ -1770,19 +1922,26 @@ static void create_children(void)
     mkbutton(g_main, ID_DEMO, "Demo");
     mkbutton(g_main, ID_OVERLAY, "Overlay");
 
+    static const char *const pool_cols[] = { "Card", "Chance", "Owned" };
+    static const int pool_w[] = { 200, 70, 64 };
+    /* summary page */
+    HWND p = g_pages[PG_SUMMARY];
+    g_sumcard = CreateWindow("FMSum", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
+    vlist_create(&g_lists[L_DROPS], L_DROPS, p, 3, pool_cols, pool_w, "lcc", t_drops, c_pool);
+    static const char *const st_cols[] = { "Card", "In deck", "In trunk", "Total", "Change" };
+    static const int st_w[] = { 200, 70, 76, 60, 70 };
+    vlist_create(&g_lists[L_SUM_TRACK], L_SUM_TRACK, p, 5, st_cols, st_w, "lcccc", t_sumtrack, c_track);
+    static const char *const sf_cols[] = { "Card", "Password", "Cost", "Owned" };
+    static const int sf_w[] = { 200, 100, 70, 64 };
+    vlist_create(&g_lists[L_SUM_FAV], L_SUM_FAV, p, 4, sf_cols, sf_w, "lccc", t_sumfav, c_sumfav);
+
     /* duel page */
-    HWND p = g_pages[PG_DUEL];
+    p = g_pages[PG_DUEL];
     g_rankpanel = CreateWindow("FMRank", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     g_duelhead = CreateWindow("FMHead", "", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, p, NULL, g_inst, NULL);
     static const char *const rank_cols[] = { "Stat", "Value", "Points", "Next change" };
     static const int rank_w[] = { 160, 70, 70, 170 };
     vlist_create(&g_lists[L_RANK], L_RANK, p, 4, rank_cols, rank_w, "lccl", t_rank, c_rank);
-    static const char *const pool_cols[] = { "Card", "Chance", "Owned" };
-    static const int pool_w[] = { 200, 70, 64 };
-    vlist_create(&g_lists[L_DROPS], L_DROPS, p, 3, pool_cols, pool_w, "lcc", t_drops, c_pool);
-    static const char *const rec_cols[] = { "When", "Opponent", "Result", "Rank", "Score", "Drop" };
-    static const int rec_w[] = { 130, 160, 70, 80, 60, 260 };
-    vlist_create(&g_lists[L_RECENT], L_RECENT, p, 6, rec_cols, rec_w, "llcccl", t_recent, c_recent);
     int ten[N_RULES];
     for (int i = 0; i < N_RULES; i++) ten[i] = i;
     vlist_set_rows(&g_lists[L_RANK], ten, N_RULES);
@@ -1811,6 +1970,13 @@ static void create_children(void)
     int dl[N_DUELISTS];
     for (int i = 0; i < N_DUELISTS; i++) dl[i] = i + 1;
     vlist_set_rows(&g_lists[L_DUELISTS], dl, N_DUELISTS);
+
+    /* drops page */
+    p = g_pages[PG_DROPS];
+    static const char *const dd_cols[] = { "#", "Duelist", "Tables" };
+    static const int dd_w[] = { 36, 170, 76 };
+    vlist_create(&g_lists[L_DROPDUEL], L_DROPDUEL, p, 3, dd_cols, dd_w, "clc", t_dropduel, c_dropduel);
+    vlist_set_rows(&g_lists[L_DROPDUEL], dl, N_DUELISTS);
     g_tier_combo = CreateWindow("COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 0, 0, 10, 10, p,
                                 (HMENU)(INT_PTR)ID_TIER, g_inst, NULL);
     SendMessage(g_tier_combo, WM_SETFONT, (WPARAM)f_ui, TRUE);
@@ -1830,9 +1996,12 @@ static void create_children(void)
     g_pw_search = mkedit(p, ID_PW_SEARCH);
     mkbutton(p, ID_PW_UNOWNED, "Not owned");
     mkbutton(p, ID_PW_AFFORD, "Affordable now");
-    static const char *const pw_cols[] = { "ID", "Name", "Password", "Cost", "Type", "Attr", "Lv", "ATK", "DEF", "Owned" };
-    static const int pw_w[] = { 44, 240, 100, 70, 116, 70, 40, 60, 60, 66 };
-    vlist_create(&g_lists[L_PW], L_PW, p, 10, pw_cols, pw_w, "llcclcccccc", t_pw, c_pw);
+    mkbutton(p, ID_PW_FAVONLY, "Favorites only");
+    mkbutton(p, ID_PW_FAV, "Favorite / Unfavorite");
+    static const char *const pw_cols[] = { "Fav", "ID", "Name", "Password", "Cost", "Type", "Attr", "Lv", "ATK", "DEF",
+                                           "Owned" };
+    static const int pw_w[] = { 40, 44, 240, 100, 70, 116, 70, 40, 60, 60, 66 };
+    vlist_create(&g_lists[L_PW], L_PW, p, 11, pw_cols, pw_w, "cllcclccccc", t_pw, c_pw);
 
     /* log page */
     p = g_pages[PG_LOG];
@@ -1844,8 +2013,8 @@ static void create_children(void)
     rebuild_all_cards();
     rebuild_tracked();
     rebuild_pw();
-    rebuild_recent();
-    snprintf(t_drop_caption, sizeof t_drop_caption, "Shown during a duel.");
+    rebuild_favs();
+    snprintf(t_drop_caption, sizeof t_drop_caption, "Shown during a duel. Browse any duelist on the Drops tab.");
     snprintf(t_last_drops, sizeof t_last_drops, "-");
     update_dstats(1);
 }
@@ -1903,12 +2072,12 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         case ID_TRACK: { int id2 = vlist_selected(&g_lists[L_ALL]); if (id2 > 0) track_ids(&id2, 1); break; }
         case ID_UNTRACK: untrack_selected(); break;
         case ID_TRACKDECK:
-            if (!snap_ok()) MessageBox(h, "Attach to the game with a save loaded first.", "FM Tracker", MB_ICONINFORMATION);
+            if (!snap_ok()) MessageBox(h, "Attach to the game with a save loaded first.", APP_NAME, MB_ICONINFORMATION);
             else { int ids[40]; for (int i = 0; i < 40; i++) ids[i] = g_snap.deck[i]; track_ids(ids, 40); }
             break;
         case ID_TRACKEXO: { int ids[] = { 17, 18, 19, 20, 21 }; track_ids(ids, 5); break; }
         case ID_CLEAR:
-            if (g_ntracked && MessageBox(h, "Stop tracking all cards?", "FM Tracker", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            if (g_ntracked && MessageBox(h, "Stop tracking all cards?", APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES) {
                 g_ntracked = 0;
                 save_tracked();
                 rebuild_tracked();
@@ -1917,6 +2086,13 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
             break;
         case ID_PW_UNOWNED: g_pw_unowned = !g_pw_unowned; InvalidateRect(g_btn[id - 100], NULL, FALSE); rebuild_pw(); break;
         case ID_PW_AFFORD: g_pw_afford = !g_pw_afford; InvalidateRect(g_btn[id - 100], NULL, FALSE); rebuild_pw(); break;
+        case ID_PW_FAVONLY: g_pw_favonly = !g_pw_favonly; InvalidateRect(g_btn[id - 100], NULL, FALSE); rebuild_pw(); break;
+        case ID_PW_FAV: {
+            int fid = vlist_selected(&g_lists[L_PW]);
+            if (fid > 0) toggle_fav(fid);
+            else MessageBox(h, "Select a card in the list first.", APP_NAME, MB_ICONINFORMATION);
+            break;
+        }
         case ID_CARD_SEARCH: if (code == EN_CHANGE) rebuild_all_cards(); break;
         case ID_PW_SEARCH: if (code == EN_CHANGE) rebuild_pw(); break;
         case ID_TIER: if (code == CBN_SELCHANGE) fill_detail(); break;
@@ -1957,7 +2133,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     GetModuleFileName(NULL, g_dir, MAX_PATH);
     char *slash = strrchr(g_dir, '\\');
     if (slash) *slash = 0;
-    strncat(g_dir, "\\tracker_data", MAX_PATH - strlen(g_dir) - 1);
+    strncat(g_dir, "\\final7_data", MAX_PATH - strlen(g_dir) - 1);
     CreateDirectory(g_dir, NULL);
 
     g_ram = calloc(1, PS1_RAM_SIZE);
@@ -1968,6 +2144,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     load_tracked();
     load_history();
     load_pools();
+    load_favs();
 
     f_ui = mkfont("Segoe UI", 10, FW_NORMAL);
     f_bold = mkfont("Segoe UI", 10, FW_BOLD);
@@ -2004,13 +2181,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     wc.lpfnWndProc = head_proc;
     wc.lpszClassName = "FMHead";
     RegisterClassEx(&wc);
+    wc.lpfnWndProc = sum_proc;
+    wc.lpszClassName = "FMSum";
+    RegisterClassEx(&wc);
     wc.lpfnWndProc = overlay_proc;
     wc.lpszClassName = "FMOverlay";
     wc.hIcon = wc.hIconSm = LoadIcon(inst, MAKEINTRESOURCE(1));
     RegisterClassEx(&wc);
 
     int ww = g_set_w > 400 ? g_set_w : S(1260), wh = g_set_h > 300 ? g_set_h : S(820);
-    HWND h = CreateWindowEx(0, "FMTrackerMain", "FM Tracker - Yu-Gi-Oh! Forbidden Memories",
+    HWND h = CreateWindowEx(0, "FMTrackerMain", APP_NAME,
                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, g_set_x, g_set_y, ww, wh, NULL, NULL, inst, NULL);
     if (!h) return 1;
     /* keep the window on a visible monitor */
@@ -2018,10 +2198,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     GetWindowRect(h, &wr);
     if (!MonitorFromRect(&wr, MONITOR_DEFAULTTONULL)) SetWindowPos(h, NULL, 40, 40, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
     layout();
-    show_page(PG_DUEL);
+    show_page(PG_SUMMARY);
     ShowWindow(h, g_set_max ? SW_SHOWMAXIMIZED : show);
     UpdateWindow(h);
-    logf_("FM Tracker ready. Start your emulator, load your save, then press Attach (or Demo to try it).");
+    logf_(APP_NAME " ready. Start your emulator, load your save, then press Attach (or Demo to try it).");
     logf_("Data folder: %s", g_dir);
     refresh_emus();
     SetTimer(h, TIMER_POLL, 250, NULL);
