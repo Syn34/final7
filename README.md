@@ -19,7 +19,7 @@ It's a single Windows program written in C. **Download [`final7.exe`](final7.exe
 ## Using it
 1. Start your emulator and load Forbidden Memories.
 2. Load your save and get to the map or deck screen.
-3. Start `final7.exe`. It attaches by itself if an emulator is already running. Otherwise pick the emulator from the list and choose **Attach** from the **Menu** (which also has Detach, Refresh emulator list, Demo and Overlay).
+3. Start `final7.exe`. It finds and attaches to your emulator by itself, whichever you start first, and reconnects if the emulator restarts. The dot next to the title is green when it's reading your save, gold while it waits for the game or a save, and red when it isn't connected; hover over it to see the details. You can also pick an emulator from the list and choose **Attach** from the **Menu** (which also has Detach, Refresh emulator list, Demo and Overlay). Connection details are written to `final7_data\log.txt`.
 
 If the emulator runs as administrator, run final7 as administrator too. To look around without the game, choose **Demo** from the Menu (or start it with `final7.exe --demo`). It simulates a game playing endless duels.
 

@@ -121,7 +121,6 @@ static int g_askdisc = 1;
 static int g_assume_win = 1, g_pw_unowned, g_pw_afford, g_pw_favonly;
 static uint8_t g_fav[N_CARDS + 1];
 static int g_favs[N_CARDS], g_nfavs;
-static char g_dir[MAX_PATH];
 
 typedef struct { int fw, fl, sw, sl, w, l, best; double chance; } DStat;
 static DStat g_dstat[N_DUELISTS + 1];
@@ -143,6 +142,7 @@ static char t_tracked_sum[96], t_last_drops[512], t_pw_count[96], t_detail_title
 static uint64_t now_ms(void) { return GetTickCount64(); }
 
 /* ---- logging ---------------------------------------------------------------- */
+static char g_dir[MAX_PATH];
 static void logf_(const char *fmt, ...)
 {
     char msg[600], line[640];
@@ -153,6 +153,21 @@ static void logf_(const char *fmt, ...)
     SYSTEMTIME st;
     GetLocalTime(&st);
     snprintf(line, sizeof line, "[%02d:%02d:%02d] %s\r\n", st.wHour, st.wMinute, st.wSecond, msg);
+    if (g_dir[0]) {   /* final7_data\log.txt, so connection problems can be looked at later */
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s\\log.txt", g_dir);
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (GetFileAttributesExA(path, GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 512 * 1024) {
+            char old_[MAX_PATH];
+            snprintf(old_, sizeof old_, "%s\\log.old.txt", g_dir);
+            MoveFileExA(path, old_, MOVEFILE_REPLACE_EXISTING);
+        }
+        FILE *f = fopen(path, "ab");
+        if (f) {
+            fprintf(f, "%04d-%02d-%02d %s", st.wYear, st.wMonth, st.wDay, line);
+            fclose(f);
+        }
+    }
     if (!g_log) return;
     int len = GetWindowTextLength(g_log);
     if (len > 200000) { SendMessage(g_log, EM_SETSEL, 0, 100000); SendMessage(g_log, EM_REPLACESEL, 0, (LPARAM)""); len = GetWindowTextLength(g_log); }
@@ -1123,11 +1138,27 @@ static void cache_pools(void)
 /* ---- per-tick processing -------------------------------------------------------- */
 static uint32_t g_pw_sig;
 
+static HWND g_status_tip;
+static void start_attach(int quiet);
+static int g_auto = 1;                /* keep looking for an emulator to attach to */
+static DWORD g_auto_fail_pid;
+static uint64_t g_auto_fail_t, g_lost_save_t, g_scan_t;
+static DWORD g_scan_pid;
+static int g_force_scan;
+
 static void set_status(const char *s, COLORREF c)
 {
     if (strcmp(s, g_status) || c != g_status_color) {
+        if (strcmp(s, g_status)) logf_("Status: %s", s);
         snprintf(g_status, sizeof g_status, "%s", s);
         g_status_color = c;
+        if (g_status_tip) {
+            TOOLINFOA ti = { sizeof ti };
+            ti.hwnd = g_main;
+            ti.uId = 1;
+            ti.lpszText = g_status;
+            SendMessageA(g_status_tip, TTM_UPDATETIPTEXTA, 0, (LPARAM)&ti);
+        }
         RECT r = { 0, 0, S(2000), S(46) };
         InvalidateRect(g_main, &r, FALSE);
     }
@@ -1236,6 +1267,11 @@ static void on_tick(void)
         ok = 1;
     }
     if (!ok) {
+        if (g_mode == 1 && g_att.static_base) {   /* scanned address no longer readable */
+            logf_("Lost the game's memory in %s - searching again.", g_att.exe);
+            detach_all();
+            return;
+        }
         snprintf(buf, sizeof buf, "%s - waiting for the game to start", g_mode == 1 ? g_att.exe : "Demo");
         set_status(buf, C_GOLD);
         return;
@@ -1243,10 +1279,36 @@ static void on_tick(void)
     snapshot_parse(g_ram, &g_snap);
     g_have_snap = 1;
     if (!g_snap.save_loaded) {
+        /* a memory-scan address goes stale when the emulator reboots the game: look again */
+        if (g_mode == 1 && g_att.static_base && !strcmp(g_att.method, "memory scan")) {
+            if (!g_lost_save_t) g_lost_save_t = now_ms();
+            else if (now_ms() - g_lost_save_t > 8000) {
+                logf_("Lost the game's memory in %s - searching again.", g_att.exe);
+                g_lost_save_t = 0;
+                detach_all();
+                return;
+            }
+        } else if (g_mode == 1) {
+            /* the emulator's RAM pointer shows no save for a while: maybe that emulator build
+             * keeps PS1 RAM elsewhere, so also try a full memory scan (at most once a minute) */
+            if (!g_lost_save_t) g_lost_save_t = now_ms();
+            else if (now_ms() - g_lost_save_t > 20000 &&
+                     (g_att.pid != g_scan_pid || now_ms() - g_scan_t > 60000)) {
+                g_scan_pid = g_att.pid;
+                g_scan_t = now_ms();
+                g_lost_save_t = 0;
+                logf_("No save seen through %s's RAM pointer for 20 s - scanning its memory.", g_att.exe);
+                detach_all();
+                g_force_scan = 1;
+                start_attach(1);
+                return;
+            }
+        }
         snprintf(buf, sizeof buf, "%s - waiting for a save to load", g_mode == 1 ? g_att.exe : "Demo");
         set_status(buf, C_GOLD);
         return;
     }
+    g_lost_save_t = 0;
     if (g_mode == 1) snprintf(buf, sizeof buf, "%s (pid %lu) via %s", g_att.exe, g_att.pid, g_att.method);
     else snprintf(buf, sizeof buf, "Demo mode (simulated game)");
     set_status(buf, C_GREEN);
@@ -1256,6 +1318,9 @@ static void on_tick(void)
 /* ---- attaching -------------------------------------------------------------------- */
 static void refresh_emus(void)
 {
+    DWORD keep = 0;
+    int cur = (int)SendMessage(g_emu_combo, CB_GETCURSEL, 0, 0);
+    if (cur >= 0 && cur < g_nemus) keep = g_emus[cur].pid;
     g_nemus = emu_find(g_emus, 32);
     SendMessage(g_emu_combo, CB_RESETCONTENT, 0, 0);
     if (!g_nemus) SendMessage(g_emu_combo, CB_ADDSTRING, 0, (LPARAM)"No emulator found - start one, then refresh");
@@ -1264,7 +1329,28 @@ static void refresh_emus(void)
         snprintf(s, sizeof s, "%s  (pid %lu)", g_emus[i].exe, g_emus[i].pid);
         SendMessage(g_emu_combo, CB_ADDSTRING, 0, (LPARAM)s);
     }
-    SendMessage(g_emu_combo, CB_SETCURSEL, 0, 0);
+    int sel = 0;
+    for (int i = 0; i < g_nemus; i++) if (g_emus[i].pid == keep) sel = i;
+    SendMessage(g_emu_combo, CB_SETCURSEL, sel, 0);
+}
+
+/* While nothing is attached, look for an emulator every couple of seconds and attach
+ * quietly. A process that failed is retried every 15 s (its game may not be loaded yet). */
+static void start_attach(int quiet);
+static void auto_attach(void)
+{
+    if (!g_auto || g_mode || g_attaching) return;
+    if (SendMessage(g_emu_combo, CB_GETDROPPEDSTATE, 0, 0)) return;   /* the user is picking one */
+    EmuProc found[32];
+    int n = emu_find(found, 32);
+    int changed = n != g_nemus;
+    for (int i = 0; !changed && i < n; i++) changed = found[i].pid != g_emus[i].pid;
+    if (changed) refresh_emus();
+    if (!g_nemus) return;
+    int i = (int)SendMessage(g_emu_combo, CB_GETCURSEL, 0, 0);
+    if (i < 0 || i >= g_nemus) i = 0;
+    if (g_emus[i].pid == g_auto_fail_pid && now_ms() - g_auto_fail_t < 15000) return;
+    start_attach(1);
 }
 
 static EmuProc g_attach_target;
@@ -1281,7 +1367,8 @@ static DWORD WINAPI attach_thread(LPVOID p)
 static void start_attach(int quiet)
 {
     if (g_attaching) return;
-    if (!g_nemus) refresh_emus();
+    if (!quiet) { refresh_emus(); g_auto = 1; }
+    else if (!g_nemus) refresh_emus();
     if (!g_nemus) {
         if (!quiet)
             MessageBox(g_main, "No supported emulator is running.\n\nSupported: DuckStation, ePSXe, RetroArch "
@@ -1293,6 +1380,8 @@ static void start_attach(int quiet)
     if (i < 0 || i >= g_nemus) i = 0;
     detach_all();
     g_attach_target = g_emus[i];
+    if (g_force_scan) g_attach_target.kind = EMU_GENERIC;   /* skip straight to the memory scan */
+    g_force_scan = 0;
     g_attach_quiet = quiet;
     g_attaching = 1;
     g_progress = 0;
@@ -1305,7 +1394,9 @@ static void on_attached(int ok)
 {
     g_attaching = 0;
     if (!ok) {
-        set_status("Select attach from dropdown to connect", C_RED);
+        g_auto_fail_pid = g_attach_target.pid;
+        g_auto_fail_t = now_ms();
+        set_status(g_attach_err, C_RED);
         logf_("%s", g_attach_err);
         if (!g_attach_quiet) MessageBox(g_main, g_attach_err, APP_NAME, MB_ICONWARNING);
         return;
@@ -2420,9 +2511,8 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
             else { g_askdisc = 0; save_settings(); }
         }
         else if (w == 2) {
-            KillTimer(h, 2);
-            refresh_emus();
-            if (g_nemus && !g_mode) start_attach(1);
+            SetTimer(h, 2, 2000, NULL);
+            auto_attach();
         }
         return 0;
     case WM_APP_SIMDONE:
@@ -2439,7 +2529,7 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         case ID_STARDISC: pick_star_disc(); break;
         case ID_REFRESH: refresh_emus(); logf_("Found %d emulator process(es).", g_nemus); break;
         case ID_ATTACH: start_attach(0); break;
-        case ID_DETACH: detach_all(); logf_("Detached."); break;
+        case ID_DETACH: detach_all(); g_auto = 0; logf_("Detached."); break;
         case ID_DEMO: start_demo(); break;
         case ID_OVERLAY: toggle_overlay(); break;
         case ID_TRACK: track_item(vlist_selected(&g_lists[L_ALL])); break;
@@ -2626,6 +2716,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     logf_(APP_NAME " ready. Start your emulator, load your save, then press Attach (or Demo to try it).");
     logf_("Data folder: %s", g_dir);
     refresh_emus();
+    g_status_tip = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                                   0, 0, 0, 0, h, NULL, g_inst, NULL);
+    if (g_status_tip) {
+        TOOLINFOA ti = { sizeof ti };
+        ti.uFlags = TTF_SUBCLASS;
+        ti.hwnd = h;
+        ti.uId = 1;
+        SetRect(&ti.rect, S(8), S(4), S(130), S(40));   /* title + status dot */
+        ti.lpszText = g_status;
+        SendMessageA(g_status_tip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+        SendMessageA(g_status_tip, TTM_SETMAXTIPWIDTH, 0, S(420));
+    }
     SetTimer(h, TIMER_POLL, 250, NULL);
     if (cmd && strstr(cmd, "--page=")) show_page(atoi(strstr(cmd, "--page=") + 7) % N_PAGES);
     if (cmd && strstr(cmd, "--demo")) start_demo();
